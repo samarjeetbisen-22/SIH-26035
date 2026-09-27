@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+package-lock.json
+
+# Build outputs
+frontend/dist/
+dist/
+
+# Python cache & virtual environments
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+
+# SQLite databases & temp files
+*.log
+.DS_Store
+Thumbs.db
+
+# Large reference PDFs (can be kept locally)
+# *.pdf
+
+# IDE & Editor files
+.vscode/
+.idea/

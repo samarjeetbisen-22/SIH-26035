@@ -1,0 +1,205 @@
+{
+    "instrument": {
+        "manufacturer": "Essae Teraoka Pvt. Ltd.",
+        "model": "DS-852",
+        "serial_number": "ET-DS852-2026-0471",
+        "type_approval_no": "IND/LM/09/2026/0471",
+        "max_capacity": 15.0,
+        "min_capacity": 0.04,
+        "verification_scale_interval_e": 0.005,
+        "accuracy_class": "III"
+    },
+    "test_conditions": {
+        "temperature_c": 25.2,
+        "humidity_percent": 58,
+        "barometric_pressure_hpa": 1012.5,
+        "reference_mass_kg": 15.0,
+        "test_location": "Regional Reference Standards Laboratory, New Delhi",
+        "inspector_name": "Rajesh Kumar Sharma",
+        "inspector_id": "INS-DL-2024-0087"
+    },
+    "readings": [
+        {
+            "load_kg": 0.0,
+            "reading": 0.0,
+            "direction": "increasing",
+            "repeat_number": 1,
+            "position": "center"
+        },
+        {
+            "load_kg": 1.0,
+            "reading": 1.002,
+            "direction": "increasing",
+            "repeat_number": 1,
+            "position": "center"
+        },
+        {
+            "load_kg": 3.0,
+            "reading": 3.003,
+            "direction": "increasing",
+            "repeat_number": 1,
+            "position": "center"
+        },
+        {
+            "load_kg": 5.0,
+            "reading": 5.004,
+            "direction": "increasing",
+            "repeat_number": 1,
+            "position": "center"
+        },
+        {
+            "load_kg": 7.5,
+            "reading": 7.503,
+            "direction": "increasing",
+            "repeat_number": 1,
+            "position": "center"
+        },
+        {
+            "load_kg": 10.0,
+            "reading": 10.005,
+            "direction": "increasing",
+            "repeat_number": 1,
+            "position": "center"
+        },
+        {
+            "load_kg": 12.0,
+            "reading": 12.004,
+            "direction": "increasing",
+            "repeat_number": 1,
+            "position": "center"
+        },
+        {
+            "load_kg": 15.0,
+            "reading": 15.006,
+            "direction": "increasing",
+            "repeat_number": 1,
+            "position": "center"
+        },
+        {
+            "load_kg": 0.0,
+            "reading": 0.0,
+            "direction": "increasing",
+            "repeat_number": 2,
+            "position": "center"
+        },
+        {
+            "load_kg": 1.0,
+            "reading": 1.001,
+            "direction": "increasing",
+            "repeat_number": 2,
+            "position": "center"
+        },
+        {
+            "load_kg": 5.0,
+            "reading": 5.003,
+            "direction": "increasing",
+            "repeat_number": 2,
+            "position": "center"
+        },
+        {
+            "load_kg": 10.0,
+            "reading": 10.004,
+            "direction": "increasing",
+            "repeat_number": 2,
+            "position": "center"
+        },
+        {
+            "load_kg": 15.0,
+            "reading": 15.007,
+            "direction": "increasing",
+            "repeat_number": 2,
+            "position": "center"
+        },
+        {
+            "load_kg": 0.0,
+            "reading": 0.0,
+            "direction": "increasing",
+            "repeat_number": 3,
+            "position": "center"
+        },
+        {
+            "load_kg": 5.0,
+            "reading": 5.005,
+            "direction": "increasing",
+            "repeat_number": 3,
+            "position": "center"
+        },
+        {
+            "load_kg": 10.0,
+            "reading": 10.006,
+            "direction": "increasing",
+            "repeat_number": 3,
+            "position": "center"
+        },
+        {
+            "load_kg": 15.0,
+            "reading": 15.005,
+            "direction": "increasing",
+            "repeat_number": 3,
+            "position": "center"
+        },
+        {
+            "load_kg": 15.0,
+            "reading": 15.007,
+            "direction": "decreasing",
+            "repeat_number": 1,
+            "position": "center"
+        },
+        {
+            "load_kg": 10.0,
+            "reading": 10.006,
+            "direction": "decreasing",
+            "repeat_number": 1,
+            "position": "center"
+        },
+        {
+            "load_kg": 5.0,
+            "reading": 5.005,
+            "direction": "decreasing",
+            "repeat_number": 1,
+            "position": "center"
+        },
+        {
+            "load_kg": 1.0,
+            "reading": 1.002,
+            "direction": "decreasing",
+            "repeat_number": 1,
+            "position": "center"
+        },
+        {
+            "load_kg": 0.0,
+            "reading": 0.001,
+            "direction": "decreasing",
+            "repeat_number": 1,
+            "position": "center"
+        },
+        {
+            "load_kg": 5.0,
+            "reading": 5.004,
+            "direction": "increasing",
+            "repeat_number": 1,
+            "position": "front-left"
+        },
+        {
+            "load_kg": 5.0,
+            "reading": 5.003,
+            "direction": "increasing",
+            "repeat_number": 1,
+            "position": "front-right"
+        },
+        {
+            "load_kg": 5.0,
+            "reading": 5.006,
+            "direction": "increasing",
+            "repeat_number": 1,
+            "position": "back-left"
+        },
+        {
+            "load_kg": 5.0,
+            "reading": 5.002,
+            "direction": "increasing",
+            "repeat_number": 1,
+            "position": "back-right"
+        }
+    ]
+}
