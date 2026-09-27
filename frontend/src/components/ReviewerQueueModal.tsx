@@ -1,6 +1,19 @@
-import React, { useState, useEffect } from 'react';
-import { X, CheckCircle, XCircle, FileText, AlertTriangle, Download, RefreshCw, ShieldCheck } from 'lucide-react';
-import { fetchEvaluations, reviewEvaluation, generateEvaluationPdf } from '../utils/apiClient';
+import React, { useState, useEffect } from "react";
+import {
+  X,
+  CheckCircle,
+  XCircle,
+  FileText,
+  AlertTriangle,
+  Download,
+  RefreshCw,
+  ShieldCheck,
+} from "lucide-react";
+import {
+  fetchEvaluations,
+  reviewEvaluation,
+  generateEvaluationPdf,
+} from "../utils/apiClient";
 
 interface ReviewerQueueModalProps {
   isOpen: boolean;
@@ -8,11 +21,15 @@ interface ReviewerQueueModalProps {
   onNotification: (msg: string) => void;
 }
 
-export const ReviewerQueueModal: React.FC<ReviewerQueueModalProps> = ({ isOpen, onClose, onNotification }) => {
+export const ReviewerQueueModal: React.FC<ReviewerQueueModalProps> = ({
+  isOpen,
+  onClose,
+  onNotification,
+}) => {
   const [evaluations, setEvaluations] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedEval, setSelectedEval] = useState<any | null>(null);
-  const [comments, setComments] = useState('');
+  const [comments, setComments] = useState("");
   const [actionLoading, setActionLoading] = useState(false);
 
   const loadQueue = async () => {
@@ -37,10 +54,12 @@ export const ReviewerQueueModal: React.FC<ReviewerQueueModalProps> = ({ isOpen, 
 
   if (!isOpen) return null;
 
-  const handleReviewAction = async (verdict: 'APPROVE' | 'REJECT') => {
+  const handleReviewAction = async (verdict: "APPROVE" | "REJECT") => {
     if (!selectedEval) return;
-    if (verdict === 'REJECT' && !comments.trim()) {
-      alert('Please provide comments explaining why the evaluation was rejected.');
+    if (verdict === "REJECT" && !comments.trim()) {
+      alert(
+        "Please provide comments explaining why the evaluation was rejected.",
+      );
       return;
     }
     setActionLoading(true);
@@ -48,14 +67,19 @@ export const ReviewerQueueModal: React.FC<ReviewerQueueModalProps> = ({ isOpen, 
       const res = await reviewEvaluation(
         selectedEval.id,
         verdict,
-        comments || (verdict === 'APPROVE' ? 'Statutory OIML R-76 requirements verified and approved.' : 'Rejected.')
+        comments ||
+          (verdict === "APPROVE"
+            ? "Statutory OIML R-76 requirements verified and approved."
+            : "Rejected."),
       );
       if (res.success) {
-        onNotification(`Evaluation ${selectedEval.serial_number || selectedEval.id} marked as ${verdict}D`);
-        setComments('');
+        onNotification(
+          `Evaluation ${selectedEval.serial_number || selectedEval.id} marked as ${verdict}D`,
+        );
+        setComments("");
         await loadQueue();
       } else {
-        alert(res.error || 'Failed to review evaluation');
+        alert(res.error || "Failed to review evaluation");
       }
     } finally {
       setActionLoading(false);
@@ -67,9 +91,9 @@ export const ReviewerQueueModal: React.FC<ReviewerQueueModalProps> = ({ isOpen, 
     try {
       const res = await generateEvaluationPdf(evalId);
       if (res.success && (res.report_url || res.pdf_url)) {
-        window.open(res.report_url || res.pdf_url, '_blank');
+        window.open(res.report_url || res.pdf_url, "_blank");
       } else {
-        alert(res.error || 'Could not generate official PDF');
+        alert(res.error || "Could not generate official PDF");
       }
     } finally {
       setActionLoading(false);
@@ -86,8 +110,12 @@ export const ReviewerQueueModal: React.FC<ReviewerQueueModalProps> = ({ isOpen, 
               <ShieldCheck className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-base font-semibold text-[#0F172A]">Reviewer Approval Queue & Workflow</h2>
-              <p className="text-xs text-[#64748B]">OIML R-76 Statutory Verification & Stamping Portal</p>
+              <h2 className="text-base font-semibold text-[#0F172A]">
+                Reviewer Approval Queue & Workflow
+              </h2>
+              <p className="text-xs text-[#64748B]">
+                OIML R-76 Statutory Verification & Stamping Portal
+              </p>
             </div>
           </div>
           <div className="flex items-center space-x-2">
@@ -97,9 +125,14 @@ export const ReviewerQueueModal: React.FC<ReviewerQueueModalProps> = ({ isOpen, 
               className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded transition-colors"
               title="Refresh Queue"
             >
-              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+              <RefreshCw
+                className={`w-4 h-4 ${loading ? "animate-spin" : ""}`}
+              />
             </button>
-            <button onClick={onClose} className="p-1.5 text-slate-400 hover:text-slate-700 rounded transition-colors">
+            <button
+              onClick={onClose}
+              className="p-1.5 text-slate-400 hover:text-slate-700 rounded transition-colors"
+            >
               <X className="w-5 h-5" />
             </button>
           </div>
@@ -114,36 +147,45 @@ export const ReviewerQueueModal: React.FC<ReviewerQueueModalProps> = ({ isOpen, 
             </div>
             {evaluations.map((ev) => {
               const isSelected = selectedEval?.id === ev.id;
-              const isSubmitted = ev.status === 'SUBMITTED';
-              const isApproved = ev.status === 'APPROVED';
+              const isSubmitted = ev.status === "SUBMITTED";
+              const isApproved = ev.status === "APPROVED";
               return (
                 <div
                   key={ev.id}
                   onClick={() => setSelectedEval(ev)}
                   className={`p-3 rounded-lg border text-left cursor-pointer transition-all ${
                     isSelected
-                      ? 'bg-blue-50/60 border-blue-500 shadow-sm'
-                      : 'bg-white border-[#E2E8F0] hover:border-slate-300'
+                      ? "bg-blue-50/60 border-blue-500 shadow-sm"
+                      : "bg-white border-[#E2E8F0] hover:border-slate-300"
                   }`}
                 >
                   <div className="flex items-center justify-between mb-1">
-                    <span className="font-mono text-xs font-semibold text-[#0F172A]">{ev.serial_number}</span>
+                    <span className="font-mono text-xs font-semibold text-[#0F172A]">
+                      {ev.serial_number}
+                    </span>
                     <span
                       className={`text-[10px] font-mono px-1.5 py-0.5 rounded font-medium border ${
                         isApproved
-                          ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                          ? "bg-emerald-50 text-emerald-700 border-emerald-200"
                           : isSubmitted
-                          ? 'bg-amber-50 text-amber-700 border-amber-200 animate-pulse'
-                          : 'bg-slate-100 text-slate-700 border-slate-200'
+                            ? "bg-amber-50 text-amber-700 border-amber-200 animate-pulse"
+                            : "bg-slate-100 text-slate-700 border-slate-200"
                       }`}
                     >
                       {ev.status}
                     </span>
                   </div>
-                  <div className="text-xs text-[#64748B] truncate">{ev.model} • {ev.manufacturer}</div>
+                  <div className="text-xs text-[#64748B] truncate">
+                    {ev.model} • {ev.manufacturer}
+                  </div>
                   <div className="mt-2 flex items-center justify-between text-[11px] text-[#64748B]">
-                    <span>Score: <strong className="text-slate-800">{ev.compliance_score || 100}%</strong></span>
-                    <span>Inspector: {ev.inspector_name || 'Rajesh'}</span>
+                    <span>
+                      Score:{" "}
+                      <strong className="text-slate-800">
+                        {ev.compliance_score || 100}%
+                      </strong>
+                    </span>
+                    <span>Inspector: {ev.inspector_name || "Rajesh"}</span>
                   </div>
                 </div>
               );
@@ -156,13 +198,24 @@ export const ReviewerQueueModal: React.FC<ReviewerQueueModalProps> = ({ isOpen, 
               <div className="space-y-5 flex-1">
                 <div className="flex items-center justify-between pb-4 border-b border-[#E2E8F0]">
                   <div>
-                    <h3 className="text-lg font-bold text-[#0F172A]">{selectedEval.model}</h3>
-                    <p className="text-xs font-mono text-[#64748B]">Serial: {selectedEval.serial_number} | Class {selectedEval.accuracy_class}</p>
+                    <h3 className="text-lg font-bold text-[#0F172A]">
+                      {selectedEval.model}
+                    </h3>
+                    <p className="text-xs font-mono text-[#64748B]">
+                      Serial: {selectedEval.serial_number} | Class{" "}
+                      {selectedEval.accuracy_class}
+                    </p>
                   </div>
                   <div className="text-right">
-                    <div className="text-xs font-medium text-[#64748B]">OIML Verdict</div>
-                    <div className={`text-base font-bold font-mono ${selectedEval.conformity ? 'text-emerald-600' : 'text-rose-600'}`}>
-                      {selectedEval.conformity ? 'PASSED (MPE Valid)' : 'FAILED (Exceeds MPE)'}
+                    <div className="text-xs font-medium text-[#64748B]">
+                      OIML Verdict
+                    </div>
+                    <div
+                      className={`text-base font-bold font-mono ${selectedEval.conformity ? "text-emerald-600" : "text-rose-600"}`}
+                    >
+                      {selectedEval.conformity
+                        ? "PASSED (MPE Valid)"
+                        : "FAILED (Exceeds MPE)"}
                     </div>
                   </div>
                 </div>
@@ -170,32 +223,51 @@ export const ReviewerQueueModal: React.FC<ReviewerQueueModalProps> = ({ isOpen, 
                 {/* Key Metrics Grid */}
                 <div className="grid grid-cols-4 gap-3">
                   <div className="bg-slate-50 p-2.5 rounded border border-[#E2E8F0]">
-                    <div className="text-[10px] text-[#64748B]">Compliance Score</div>
-                    <div className="text-sm font-bold text-slate-900 font-mono">{selectedEval.compliance_score}%</div>
+                    <div className="text-[10px] text-[#64748B]">
+                      Compliance Score
+                    </div>
+                    <div className="text-sm font-bold text-slate-900 font-mono">
+                      {selectedEval.compliance_score}%
+                    </div>
                   </div>
                   <div className="bg-slate-50 p-2.5 rounded border border-[#E2E8F0]">
                     <div className="text-[10px] text-[#64748B]">Risk Level</div>
-                    <div className="text-sm font-bold text-slate-900">{selectedEval.risk_level || 'LOW'}</div>
+                    <div className="text-sm font-bold text-slate-900">
+                      {selectedEval.risk_level || "LOW"}
+                    </div>
                   </div>
                   <div className="bg-slate-50 p-2.5 rounded border border-[#E2E8F0]">
-                    <div className="text-[10px] text-[#64748B]">Expanded Uncert. U</div>
-                    <div className="text-sm font-bold text-slate-900 font-mono">{selectedEval.expanded_uncertainty || 0} kg</div>
+                    <div className="text-[10px] text-[#64748B]">
+                      Expanded Uncert. U
+                    </div>
+                    <div className="text-sm font-bold text-slate-900 font-mono">
+                      {selectedEval.expanded_uncertainty || 0} kg
+                    </div>
                   </div>
                   <div className="bg-slate-50 p-2.5 rounded border border-[#E2E8F0]">
-                    <div className="text-[10px] text-[#64748B]">Max Capacity</div>
-                    <div className="text-sm font-bold text-slate-900 font-mono">{selectedEval.max_capacity} kg</div>
+                    <div className="text-[10px] text-[#64748B]">
+                      Max Capacity
+                    </div>
+                    <div className="text-sm font-bold text-slate-900 font-mono">
+                      {selectedEval.max_capacity} kg
+                    </div>
                   </div>
                 </div>
 
                 {/* Verification Hash & Certificate */}
                 <div className="p-3 bg-slate-50 rounded border border-[#E2E8F0] space-y-1">
-                  <div className="text-[11px] font-semibold text-[#0F172A]">Cryptographic Verification Digest:</div>
+                  <div className="text-[11px] font-semibold text-[#0F172A]">
+                    Cryptographic Verification Digest:
+                  </div>
                   <div className="font-mono text-xs text-blue-700 bg-white p-2 rounded border border-slate-200 break-all select-all">
-                    {selectedEval.verification_hash || 'OIML-R76-2026-HASH'}
+                    {selectedEval.verification_hash || "OIML-R76-2026-HASH"}
                   </div>
                   {selectedEval.certificate_number && (
                     <div className="text-xs text-emerald-700 font-medium pt-1">
-                      Certificate No: <span className="font-mono font-bold">{selectedEval.certificate_number}</span>
+                      Certificate No:{" "}
+                      <span className="font-mono font-bold">
+                        {selectedEval.certificate_number}
+                      </span>
                     </div>
                   )}
                 </div>
@@ -227,7 +299,7 @@ export const ReviewerQueueModal: React.FC<ReviewerQueueModalProps> = ({ isOpen, 
 
                   <div className="flex items-center space-x-2">
                     <button
-                      onClick={() => handleReviewAction('REJECT')}
+                      onClick={() => handleReviewAction("REJECT")}
                       disabled={actionLoading}
                       className="flex items-center space-x-1.5 px-4 py-2 text-xs font-medium text-rose-700 bg-rose-50 border border-rose-200 rounded hover:bg-rose-100 transition-colors"
                     >
@@ -235,7 +307,7 @@ export const ReviewerQueueModal: React.FC<ReviewerQueueModalProps> = ({ isOpen, 
                       <span>Reject (Re-Test)</span>
                     </button>
                     <button
-                      onClick={() => handleReviewAction('APPROVE')}
+                      onClick={() => handleReviewAction("APPROVE")}
                       disabled={actionLoading}
                       className="flex items-center space-x-1.5 px-4 py-2 text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded shadow-sm transition-colors"
                     >

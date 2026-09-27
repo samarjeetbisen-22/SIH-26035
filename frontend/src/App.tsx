@@ -54,16 +54,20 @@ export function App() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   // Authentication State
-  const [currentUser, setCurrentUser] = useState<UserSession | null>(getAuthUser());
+  const [currentUser, setCurrentUser] = useState<UserSession | null>(
+    getAuthUser(),
+  );
 
   // Backend Integration & Modals State
   const [backendOnline, setBackendOnline] = useState<boolean>(false);
   const [isSavingAudit, setIsSavingAudit] = useState<boolean>(false);
   const [isGeneratingPdf, setIsGeneratingPdf] = useState<boolean>(false);
   const [isAuditModalOpen, setIsAuditModalOpen] = useState<boolean>(false);
-  const [isReviewerModalOpen, setIsReviewerModalOpen] = useState<boolean>(false);
+  const [isReviewerModalOpen, setIsReviewerModalOpen] =
+    useState<boolean>(false);
   const [isOwnerModalOpen, setIsOwnerModalOpen] = useState<boolean>(false);
-  const [isAttachmentModalOpen, setIsAttachmentModalOpen] = useState<boolean>(false);
+  const [isAttachmentModalOpen, setIsAttachmentModalOpen] =
+    useState<boolean>(false);
   const [auditRecords, setAuditRecords] = useState<AuditHistoryRecord[]>([]);
   const [isLoadingAudit, setIsLoadingAudit] = useState<boolean>(false);
   const [dashboardStats, setDashboardStats] = useState<any | null>(null);
@@ -282,19 +286,32 @@ export function App() {
               <span>Live Laboratory Telemetry:</span>
             </span>
             <span className="text-slate-700">
-              Fleet: <strong className="font-mono text-slate-900">{dashboardStats.total_instruments || 0}</strong> scales
+              Fleet:{" "}
+              <strong className="font-mono text-slate-900">
+                {dashboardStats.total_instruments || 0}
+              </strong>{" "}
+              scales
             </span>
             <span>·</span>
             <span className="text-slate-700">
-              Evaluations: <strong className="font-mono text-slate-900">{dashboardStats.total_evaluations || 0}</strong>
+              Evaluations:{" "}
+              <strong className="font-mono text-slate-900">
+                {dashboardStats.total_evaluations || 0}
+              </strong>
             </span>
             <span>·</span>
             <span className="text-slate-700">
-              Statutory Pass Rate: <strong className="font-mono text-emerald-700 font-semibold">{dashboardStats.pass_rate || 100}%</strong>
+              Statutory Pass Rate:{" "}
+              <strong className="font-mono text-emerald-700 font-semibold">
+                {dashboardStats.pass_rate || 100}%
+              </strong>
             </span>
             <span>·</span>
             <span className="text-slate-700">
-              Expiring &lt;30d: <strong className="font-mono text-amber-700 font-semibold">{dashboardStats.expiring_soon_count || 0}</strong>
+              Expiring &lt;30d:{" "}
+              <strong className="font-mono text-amber-700 font-semibold">
+                {dashboardStats.expiring_soon_count || 0}
+              </strong>
             </span>
           </div>
 

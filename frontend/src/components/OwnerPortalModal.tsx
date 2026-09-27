@@ -1,6 +1,20 @@
-import React, { useState, useEffect } from 'react';
-import { X, Building2, Calendar, FileText, Download, CheckCircle, AlertTriangle, RefreshCw, Plus } from 'lucide-react';
-import { fetchInstruments, fetchEvaluations, generateEvaluationPdf } from '../utils/apiClient';
+import React, { useState, useEffect } from "react";
+import {
+  X,
+  Building2,
+  Calendar,
+  FileText,
+  Download,
+  CheckCircle,
+  AlertTriangle,
+  RefreshCw,
+  Plus,
+} from "lucide-react";
+import {
+  fetchInstruments,
+  fetchEvaluations,
+  generateEvaluationPdf,
+} from "../utils/apiClient";
 
 interface OwnerPortalModalProps {
   isOpen: boolean;
@@ -9,7 +23,12 @@ interface OwnerPortalModalProps {
   onNotification: (msg: string) => void;
 }
 
-export const OwnerPortalModal: React.FC<OwnerPortalModalProps> = ({ isOpen, onClose, ownerName, onNotification }) => {
+export const OwnerPortalModal: React.FC<OwnerPortalModalProps> = ({
+  isOpen,
+  onClose,
+  ownerName,
+  onNotification,
+}) => {
   const [instruments, setInstruments] = useState<any[]>([]);
   const [evaluations, setEvaluations] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
@@ -20,7 +39,7 @@ export const OwnerPortalModal: React.FC<OwnerPortalModalProps> = ({ isOpen, onCl
     try {
       const [instData, evalData] = await Promise.all([
         fetchInstruments(),
-        fetchEvaluations()
+        fetchEvaluations(),
       ]);
       setInstruments(instData);
       setEvaluations(evalData);
@@ -47,18 +66,18 @@ export const OwnerPortalModal: React.FC<OwnerPortalModalProps> = ({ isOpen, onCl
 
   const handleDownloadPdf = async (instId: string) => {
     // Find matching evaluation
-    const matchingEval = evaluations.find(e => e.instrument_id === instId);
+    const matchingEval = evaluations.find((e) => e.instrument_id === instId);
     if (!matchingEval) {
-      alert('No formal evaluation report available for this scale yet.');
+      alert("No formal evaluation report available for this scale yet.");
       return;
     }
     setActionLoading(true);
     try {
       const res = await generateEvaluationPdf(matchingEval.id);
       if (res.success && (res.report_url || res.pdf_url)) {
-        window.open(res.report_url || res.pdf_url, '_blank');
+        window.open(res.report_url || res.pdf_url, "_blank");
       } else {
-        alert(res.error || 'Could not retrieve verification certificate');
+        alert(res.error || "Could not retrieve verification certificate");
       }
     } finally {
       setActionLoading(false);
@@ -75,8 +94,13 @@ export const OwnerPortalModal: React.FC<OwnerPortalModalProps> = ({ isOpen, onCl
               <Building2 className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-base font-semibold text-[#0F172A]">Owner Fleet Portal & Stamping Status</h2>
-              <p className="text-xs text-[#64748B]">Managing legal compliance for: <strong className="text-slate-800">{ownerName}</strong></p>
+              <h2 className="text-base font-semibold text-[#0F172A]">
+                Owner Fleet Portal & Stamping Status
+              </h2>
+              <p className="text-xs text-[#64748B]">
+                Managing legal compliance for:{" "}
+                <strong className="text-slate-800">{ownerName}</strong>
+              </p>
             </div>
           </div>
           <div className="flex items-center space-x-2">
@@ -86,9 +110,14 @@ export const OwnerPortalModal: React.FC<OwnerPortalModalProps> = ({ isOpen, onCl
               className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded transition-colors"
               title="Refresh"
             >
-              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+              <RefreshCw
+                className={`w-4 h-4 ${loading ? "animate-spin" : ""}`}
+              />
             </button>
-            <button onClick={onClose} className="p-1.5 text-slate-400 hover:text-slate-700 rounded transition-colors">
+            <button
+              onClick={onClose}
+              className="p-1.5 text-slate-400 hover:text-slate-700 rounded transition-colors"
+            >
               <X className="w-5 h-5" />
             </button>
           </div>
@@ -118,13 +147,20 @@ export const OwnerPortalModal: React.FC<OwnerPortalModalProps> = ({ isOpen, onCl
               </thead>
               <tbody className="divide-y divide-[#E2E8F0]">
                 {instruments.map((inst) => {
-                  const daysLeft = calculateDaysRemaining(inst.next_verification_due);
-                  const isVerified = inst.status === 'VERIFIED';
+                  const daysLeft = calculateDaysRemaining(
+                    inst.next_verification_due,
+                  );
+                  const isVerified = inst.status === "VERIFIED";
                   return (
-                    <tr key={inst.id} className="hover:bg-slate-50/60 transition-colors">
+                    <tr
+                      key={inst.id}
+                      className="hover:bg-slate-50/60 transition-colors"
+                    >
                       <td className="py-3 px-4 font-mono font-medium text-slate-900">
                         <div>{inst.serial_number}</div>
-                        <div className="text-[11px] font-sans text-slate-500 font-normal">{inst.model}</div>
+                        <div className="text-[11px] font-sans text-slate-500 font-normal">
+                          {inst.model}
+                        </div>
                       </td>
                       <td className="py-3 px-4 text-slate-700 font-mono">
                         Class {inst.accuracy_class} • {inst.max_capacity} kg
@@ -133,21 +169,35 @@ export const OwnerPortalModal: React.FC<OwnerPortalModalProps> = ({ isOpen, onCl
                         <span
                           className={`inline-flex items-center space-x-1 px-2 py-0.5 rounded text-[10px] font-mono font-medium border ${
                             isVerified
-                              ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                              : 'bg-amber-50 text-amber-700 border-amber-200'
+                              ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                              : "bg-amber-50 text-amber-700 border-amber-200"
                           }`}
                         >
-                          {isVerified ? <CheckCircle className="w-3 h-3" /> : <AlertTriangle className="w-3 h-3" />}
+                          {isVerified ? (
+                            <CheckCircle className="w-3 h-3" />
+                          ) : (
+                            <AlertTriangle className="w-3 h-3" />
+                          )}
                           <span>{inst.status}</span>
                         </span>
                       </td>
                       <td className="py-3 px-4 text-slate-700 font-mono">
                         {daysLeft !== null ? (
-                          <span className={daysLeft > 30 ? 'text-emerald-700 font-semibold' : 'text-amber-700 font-semibold'}>
-                            {daysLeft > 0 ? `${daysLeft} days remaining` : 'EXPIRED - Re-test Due'}
+                          <span
+                            className={
+                              daysLeft > 30
+                                ? "text-emerald-700 font-semibold"
+                                : "text-amber-700 font-semibold"
+                            }
+                          >
+                            {daysLeft > 0
+                              ? `${daysLeft} days remaining`
+                              : "EXPIRED - Re-test Due"}
                           </span>
                         ) : (
-                          <span className="text-slate-400">Not verified yet</span>
+                          <span className="text-slate-400">
+                            Not verified yet
+                          </span>
                         )}
                       </td>
                       <td className="py-3 px-4 text-right">

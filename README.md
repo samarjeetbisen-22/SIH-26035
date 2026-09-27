@@ -15,22 +15,22 @@ The application features a **stunning, high-key light design system** (pure whit
 
 ## ✅ Evaluation Criteria & Compliance Matrix (100% Complete)
 
-| Evaluation Criterion | Implementation Details | Status |
-| :--- | :--- | :---: |
-| **Real Authentication** | PBKDF2 with 100,000 iterations & cryptographic salt, HMAC-SHA256 JWT tokens | **✅ Verified** |
-| **Role Authorization** | 4 distinct roles (`ADMIN`, `INSPECTOR`, `REVIEWER`, `OWNER`) with strict RBAC guards | **✅ Verified** |
-| **Real Database** | SQLite schema (`nawi_audit.db`) with 6 relations: users, instruments, evaluations, test_readings, attachments, audit_logs | **✅ Verified** |
-| **Instrument CRUD** | Create, Read, Update, Delete with unique serial number constraints & cascade deletion | **✅ Verified** |
-| **Evaluation CRUD** | Draft intake, environmental parameter logging, status lifecycle transitions | **✅ Verified** |
-| **Real Test Reading Storage** | Batch storage of Eccentricity, Repeatability, and Weighing performance points with foreign key linkages | **✅ Verified** |
-| **Real Attachment Upload** | Base64 evidence upload (scale photos, calibration certificates) & binary downloads | **✅ Verified** |
-| **Real Review Workflow** | State machine: `DRAFT` → `SUBMITTED` → `APPROVED` / `REJECTED` with reviewer comments & stamping | **✅ Verified** |
-| **Real Owner Data Filtering** | Strict tenant isolation — owners only view and access their own fleet instruments & certificates | **✅ Verified** |
-| **Backend OIML Validation** | Server-side MPE calculation, Repeatability (A.4.4), Eccentricity (A.4.7), Hysteresis (A.4.2), GUM $u_c$, $U_{k=2}$ | **✅ Verified** |
-| **Real Report Workflow** | Automated ReportLab PDF generation with dynamic QR code verification and tamper-evident SHA-256 hash | **✅ Verified** |
-| **Audit Trail** | Tamper-evident immutable action log recording all user logins, evaluations, calculations, reviews, and uploads | **✅ Verified** |
-| **Dashboard Live Data** | Real-time statistics: total fleet count, evaluation status breakdown, pass rate %, expiring in 30 days | **✅ Verified** |
-| **End-to-End Testing** | Automated 13-point test suite (`test_e2e_compliance.py`) passing with 100% success rate | **✅ Verified** |
+| Evaluation Criterion          | Implementation Details                                                                                                    |     Status      |
+| :---------------------------- | :------------------------------------------------------------------------------------------------------------------------ | :-------------: |
+| **Real Authentication**       | PBKDF2 with 100,000 iterations & cryptographic salt, HMAC-SHA256 JWT tokens                                               | **✅ Verified** |
+| **Role Authorization**        | 4 distinct roles (`ADMIN`, `INSPECTOR`, `REVIEWER`, `OWNER`) with strict RBAC guards                                      | **✅ Verified** |
+| **Real Database**             | SQLite schema (`nawi_audit.db`) with 6 relations: users, instruments, evaluations, test_readings, attachments, audit_logs | **✅ Verified** |
+| **Instrument CRUD**           | Create, Read, Update, Delete with unique serial number constraints & cascade deletion                                     | **✅ Verified** |
+| **Evaluation CRUD**           | Draft intake, environmental parameter logging, status lifecycle transitions                                               | **✅ Verified** |
+| **Real Test Reading Storage** | Batch storage of Eccentricity, Repeatability, and Weighing performance points with foreign key linkages                   | **✅ Verified** |
+| **Real Attachment Upload**    | Base64 evidence upload (scale photos, calibration certificates) & binary downloads                                        | **✅ Verified** |
+| **Real Review Workflow**      | State machine: `DRAFT` → `SUBMITTED` → `APPROVED` / `REJECTED` with reviewer comments & stamping                          | **✅ Verified** |
+| **Real Owner Data Filtering** | Strict tenant isolation — owners only view and access their own fleet instruments & certificates                          | **✅ Verified** |
+| **Backend OIML Validation**   | Server-side MPE calculation, Repeatability (A.4.4), Eccentricity (A.4.7), Hysteresis (A.4.2), GUM $u_c$, $U_{k=2}$        | **✅ Verified** |
+| **Real Report Workflow**      | Automated ReportLab PDF generation with dynamic QR code verification and tamper-evident SHA-256 hash                      | **✅ Verified** |
+| **Audit Trail**               | Tamper-evident immutable action log recording all user logins, evaluations, calculations, reviews, and uploads            | **✅ Verified** |
+| **Dashboard Live Data**       | Real-time statistics: total fleet count, evaluation status breakdown, pass rate %, expiring in 30 days                    | **✅ Verified** |
+| **End-to-End Testing**        | Automated 13-point test suite (`test_e2e_compliance.py`) passing with 100% success rate                                   | **✅ Verified** |
 
 ---
 
@@ -38,12 +38,12 @@ The application features a **stunning, high-key light design system** (pure whit
 
 Metrolab includes a **Quick Role Switcher** banner directly at the top of the application to test any persona with a single click:
 
-| Role | Username | Password | Full Name & Organization | Access Permissions |
-| :--- | :--- | :--- | :--- | :--- |
-| **INSPECTOR** | `rajesh_inspector` | `Inspector@123` | Rajesh Kumar (Senior Inspector, RRSL) | Instrument Intake, Testing Ledger, Upload Evidence, Submit Evaluations |
-| **REVIEWER** | `priya_reviewer` | `Reviewer@123` | Dr. Priya Sharma (NABL Reviewer) | Reviewer Queue, Approve / Reject Stamping, Audit Logs, Generate Official PDF |
-| **OWNER** | `essae_owner` | `Owner@123` | Essae Digitronics Fleet Admin | Owner Fleet Portal, Validity Countdown, Download Certificates (Isolated) |
-| **ADMIN** | `admin` | `Admin@123` | S. Roy (Director, Legal Metrology) | Full System Access, Audit Trail Inspection, Fleet Management |
+| Role          | Username           | Password        | Full Name & Organization              | Access Permissions                                                           |
+| :------------ | :----------------- | :-------------- | :------------------------------------ | :--------------------------------------------------------------------------- |
+| **INSPECTOR** | `rajesh_inspector` | `Inspector@123` | Rajesh Kumar (Senior Inspector, RRSL) | Instrument Intake, Testing Ledger, Upload Evidence, Submit Evaluations       |
+| **REVIEWER**  | `priya_reviewer`   | `Reviewer@123`  | Dr. Priya Sharma (NABL Reviewer)      | Reviewer Queue, Approve / Reject Stamping, Audit Logs, Generate Official PDF |
+| **OWNER**     | `essae_owner`      | `Owner@123`     | Essae Digitronics Fleet Admin         | Owner Fleet Portal, Validity Countdown, Download Certificates (Isolated)     |
+| **ADMIN**     | `admin`            | `Admin@123`     | S. Roy (Director, Legal Metrology)    | Full System Access, Audit Trail Inspection, Fleet Management                 |
 
 ---
 
@@ -56,6 +56,7 @@ python test_e2e_compliance.py
 ```
 
 ### Test Suite Output:
+
 ```text
 ======================================================================
   METROLAB SIH-26035 E2E COMPLIANCE VERIFICATION TEST SUITE
@@ -74,7 +75,7 @@ python test_e2e_compliance.py
   [PASS] 12. Complete Audit Trail Logging Verified
   [PASS] 13. Dashboard Live Real-Time Aggregations Verified
 ======================================================================
-  ALL 13 END-TO-END SIH-26035 COMPLIANCE TESTS PASSED SUCCESSFULLY! 
+  ALL 13 END-TO-END SIH-26035 COMPLIANCE TESTS PASSED SUCCESSFULLY!
 ======================================================================
 ```
 
@@ -107,6 +108,7 @@ Open your browser at `http://localhost:5173/` (automatically proxies requests to
 ## 📄 Statutory & Regulatory Citations
 
 Developed for statutory verification in accordance with:
+
 - **OIML R 76-1 (2006)**: Non-automatic weighing instruments — Metrological and technical requirements.
 - **The Legal Metrology Act, 2009**: Section 12 (Approval of Model) & Section 24 (Verification and Stamping).
 - **Legal Metrology (General) Rules, 2011**: Tenth Schedule (Non-automatic weighing instruments).

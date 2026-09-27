@@ -1,6 +1,17 @@
-import React, { useState, useEffect } from 'react';
-import { X, Upload, FileText, Download, CheckCircle, Paperclip, RefreshCw } from 'lucide-react';
-import { uploadEvaluationAttachment, fetchEvaluationDetails } from '../utils/apiClient';
+import React, { useState, useEffect } from "react";
+import {
+  X,
+  Upload,
+  FileText,
+  Download,
+  CheckCircle,
+  Paperclip,
+  RefreshCw,
+} from "lucide-react";
+import {
+  uploadEvaluationAttachment,
+  fetchEvaluationDetails,
+} from "../utils/apiClient";
 
 interface AttachmentUploadModalProps {
   isOpen: boolean;
@@ -16,7 +27,7 @@ export const AttachmentUploadModal: React.FC<AttachmentUploadModalProps> = ({
   onNotification,
 }) => {
   const [attachments, setAttachments] = useState<any[]>([]);
-  const [description, setDescription] = useState('');
+  const [description, setDescription] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -50,7 +61,7 @@ export const AttachmentUploadModal: React.FC<AttachmentUploadModalProps> = ({
 
   const handleUpload = async () => {
     if (!selectedFile) {
-      alert('Please select a file to upload');
+      alert("Please select a file to upload");
       return;
     }
 
@@ -58,27 +69,27 @@ export const AttachmentUploadModal: React.FC<AttachmentUploadModalProps> = ({
     try {
       const reader = new FileReader();
       reader.onload = async () => {
-        const base64Data = (reader.result as string).split(',')[1];
+        const base64Data = (reader.result as string).split(",")[1];
         const res = await uploadEvaluationAttachment(
           evaluationId,
           base64Data,
           selectedFile.name,
-          description || 'Metrological verification evidence',
-          selectedFile.type || 'application/octet-stream'
+          description || "Metrological verification evidence",
+          selectedFile.type || "application/octet-stream",
         );
 
         if (res.success) {
           onNotification(`Uploaded ${selectedFile.name} successfully`);
           setSelectedFile(null);
-          setDescription('');
+          setDescription("");
           await loadAttachments();
         } else {
-          alert(res.error || 'Upload failed');
+          alert(res.error || "Upload failed");
         }
       };
       reader.readAsDataURL(selectedFile);
     } catch (err: any) {
-      alert('Error reading file: ' + err.message);
+      alert("Error reading file: " + err.message);
     } finally {
       setIsUploading(false);
     }
@@ -94,15 +105,27 @@ export const AttachmentUploadModal: React.FC<AttachmentUploadModalProps> = ({
               <Paperclip className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-base font-semibold text-[#0F172A]">Metrological Test Evidence & Attachments</h2>
-              <p className="text-xs text-[#64748B]">Evaluation ID: <span className="font-mono">{evaluationId}</span></p>
+              <h2 className="text-base font-semibold text-[#0F172A]">
+                Metrological Test Evidence & Attachments
+              </h2>
+              <p className="text-xs text-[#64748B]">
+                Evaluation ID: <span className="font-mono">{evaluationId}</span>
+              </p>
             </div>
           </div>
           <div className="flex items-center space-x-2">
-            <button onClick={loadAttachments} className="p-1.5 text-slate-500 hover:text-slate-800 rounded transition-colors">
-              <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
+            <button
+              onClick={loadAttachments}
+              className="p-1.5 text-slate-500 hover:text-slate-800 rounded transition-colors"
+            >
+              <RefreshCw
+                className={`w-4 h-4 ${isLoading ? "animate-spin" : ""}`}
+              />
             </button>
-            <button onClick={onClose} className="p-1.5 text-slate-400 hover:text-slate-700 rounded transition-colors">
+            <button
+              onClick={onClose}
+              className="p-1.5 text-slate-400 hover:text-slate-700 rounded transition-colors"
+            >
               <X className="w-5 h-5" />
             </button>
           </div>
@@ -114,8 +137,12 @@ export const AttachmentUploadModal: React.FC<AttachmentUploadModalProps> = ({
           <div className="p-4 border-2 border-dashed border-[#E2E8F0] rounded-lg bg-slate-50/50 space-y-3">
             <div className="flex flex-col items-center justify-center text-center">
               <Upload className="w-8 h-8 text-blue-500 mb-2" />
-              <div className="text-xs font-semibold text-[#0F172A]">Upload Scale Evidence or Certificate</div>
-              <div className="text-[11px] text-[#64748B]">PDF, PNG, JPG, or CSV (Max 10 MB)</div>
+              <div className="text-xs font-semibold text-[#0F172A]">
+                Upload Scale Evidence or Certificate
+              </div>
+              <div className="text-[11px] text-[#64748B]">
+                PDF, PNG, JPG, or CSV (Max 10 MB)
+              </div>
               <input
                 type="file"
                 onChange={handleFileChange}
@@ -137,7 +164,7 @@ export const AttachmentUploadModal: React.FC<AttachmentUploadModalProps> = ({
                   disabled={isUploading}
                   className="w-full py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded transition-colors shadow-xs"
                 >
-                  {isUploading ? 'Uploading...' : 'Confirm Upload Attachment'}
+                  {isUploading ? "Uploading..." : "Confirm Upload Attachment"}
                 </button>
               </div>
             )}
@@ -155,13 +182,20 @@ export const AttachmentUploadModal: React.FC<AttachmentUploadModalProps> = ({
             ) : (
               <div className="divide-y divide-slate-100 border border-[#E2E8F0] rounded-lg overflow-hidden">
                 {attachments.map((att) => (
-                  <div key={att.id} className="p-3 flex items-center justify-between hover:bg-slate-50 transition-colors">
+                  <div
+                    key={att.id}
+                    className="p-3 flex items-center justify-between hover:bg-slate-50 transition-colors"
+                  >
                     <div className="flex items-center space-x-3">
                       <FileText className="w-5 h-5 text-blue-600" />
                       <div>
-                        <div className="text-xs font-medium text-slate-900">{att.original_name}</div>
+                        <div className="text-xs font-medium text-slate-900">
+                          {att.original_name}
+                        </div>
                         <div className="text-[11px] text-slate-500">
-                          {att.description} • {(att.file_size / 1024).toFixed(1)} KB • {att.uploaded_at?.slice(0, 10)}
+                          {att.description} •{" "}
+                          {(att.file_size / 1024).toFixed(1)} KB •{" "}
+                          {att.uploaded_at?.slice(0, 10)}
                         </div>
                       </div>
                     </div>
