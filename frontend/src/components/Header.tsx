@@ -11,6 +11,7 @@ import {
   AlertTriangle,
   ChevronDown,
   Database,
+  Paperclip,
 } from "lucide-react";
 import { InstrumentProfile, MetrologyComputation } from "../types/metrology";
 import { PRESET_PROFILES } from "../data/mockData";
@@ -27,6 +28,7 @@ interface HeaderProps {
   onExportCsv: () => void;
   backendOnline: boolean;
   onOpenAuditHistory: () => void;
+  onOpenAttachments?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -41,6 +43,7 @@ export const Header: React.FC<HeaderProps> = ({
   onExportCsv,
   backendOnline,
   onOpenAuditHistory,
+  onOpenAttachments,
 }) => {
   const [presetDropdownOpen, setPresetDropdownOpen] = React.useState(false);
 
@@ -176,6 +179,16 @@ export const Header: React.FC<HeaderProps> = ({
               <Database className="w-3.5 h-3.5 text-blue-600" />
               <span className="hidden sm:inline">Audit DB</span>
             </button>
+            {onOpenAttachments && (
+              <button
+                onClick={onOpenAttachments}
+                title="Evidence & Calibration Certificate Attachments"
+                className="flex items-center space-x-1 px-2.5 py-1.5 text-xs font-medium text-slate-700 bg-white border border-[#E2E8F0] rounded hover:bg-slate-50 transition-colors shadow-subtle"
+              >
+                <Paperclip className="w-3.5 h-3.5 text-blue-600" />
+                <span className="hidden sm:inline">Attachments</span>
+              </button>
+            )}
             <div className="h-4 w-px bg-slate-200"></div>
             <button
               onClick={onReset}

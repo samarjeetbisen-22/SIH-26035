@@ -3,8 +3,8 @@ node_modules/
 frontend/node_modules/
 package-lock.json
 
-# Build outputs
-frontend/dist/
+# Build outputs (tracked for standalone zero-dependency Python deployment)
+# frontend/dist/
 dist/
 
 # Python cache & virtual environments
@@ -15,6 +15,13 @@ __pycache__/
 .venv/
 venv/
 env/
+
+# Runtime test artifacts & uploads
+uploads/*
+!uploads/.gitkeep
+reports/*
+!reports/.gitkeep
+*_qr.png
 
 # SQLite databases & temp files
 *.log

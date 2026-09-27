@@ -17,19 +17,29 @@ import {
   saveAuditToBackend,
   generateReportLabPdf,
   fetchAuditHistory,
+  getAuthUser,
+  setAuthUser,
+  loginUser,
+  fetchDashboardStats,
+  UserSession,
 } from "./utils/apiClient";
 import { Header } from "./components/Header";
+import { AuthRoleSwitcher } from "./components/AuthRoleSwitcher";
 import { InstrumentIntakeForm } from "./components/InstrumentIntakeForm";
 import { DataEntryDashboard } from "./components/DataEntryDashboard";
 import { ComputationPreview } from "./components/ComputationPreview";
 import { AuditHistoryModal } from "./components/AuditHistoryModal";
+import { ReviewerQueueModal } from "./components/ReviewerQueueModal";
+import { OwnerPortalModal } from "./components/OwnerPortalModal";
+import { AttachmentUploadModal } from "./components/AttachmentUploadModal";
 import {
-  CheckCircle2,
   ShieldCheck,
-  Scale,
-  FileSpreadsheet,
-  Sparkles,
-  AlertCircle,
+  Building,
+  Paperclip,
+  Activity,
+  Layers,
+  CheckCircle2,
+  AlertTriangle,
 } from "lucide-react";
 
 export function App() {
@@ -43,13 +53,20 @@ export function App() {
   const [readings, setReadings] = useState<ReadingItem[]>(DEFAULT_READINGS);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  // Backend Integration State
+  // Authentication State
+  const [currentUser, setCurrentUser] = useState<UserSession | null>(getAuthUser());
+
+  // Backend Integration & Modals State
   const [backendOnline, setBackendOnline] = useState<boolean>(false);
   const [isSavingAudit, setIsSavingAudit] = useState<boolean>(false);
   const [isGeneratingPdf, setIsGeneratingPdf] = useState<boolean>(false);
   const [isAuditModalOpen, setIsAuditModalOpen] = useState<boolean>(false);
+  const [isReviewerModalOpen, setIsReviewerModalOpen] = useState<boolean>(false);
+  const [isOwnerModalOpen, setIsOwnerModalOpen] = useState<boolean>(false);
+  const [isAttachmentModalOpen, setIsAttachmentModalOpen] = useState<boolean>(false);
   const [auditRecords, setAuditRecords] = useState<AuditHistoryRecord[]>([]);
   const [isLoadingAudit, setIsLoadingAudit] = useState<boolean>(false);
+  const [dashboardStats, setDashboardStats] = useState<any | null>(null);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -58,15 +75,29 @@ export function App() {
     }, 3200);
   };
 
-  // Poll / Check Backend Connection
+  // Check Backend Connection & Poll Dashboard Stats
   const checkBackend = async () => {
     const status = await checkBackendStatus();
     setBackendOnline(status.online);
+    if (status.online) {
+      const stats = await fetchDashboardStats();
+      if (stats) setDashboardStats(stats);
+    }
   };
 
   useEffect(() => {
     checkBackend();
     const interval = setInterval(checkBackend, 10000);
+
+    // If not authenticated yet, default login as Inspector
+    if (!currentUser) {
+      loginUser("rajesh_inspector", "Inspector@123").then((res) => {
+        if (res.success && res.user) {
+          setCurrentUser(res.user);
+        }
+      });
+    }
+
     return () => clearInterval(interval);
   }, []);
 
@@ -113,6 +144,7 @@ export function App() {
       );
       if (res.success) {
         showToast("Successfully logged verification audit to nawi_audit.db");
+        checkBackend();
       } else {
         showToast("Could not save to DB: " + (res.message || "Error"));
       }
@@ -121,25 +153,23 @@ export function App() {
     }
   };
 
-  // Backend: Generate ReportLab PDF via Python
+  // Backend: Official ReportLab PDF
   const handleGeneratePythonPdf = async () => {
     setIsGeneratingPdf(true);
     try {
       const res = await generateReportLabPdf(instrument, conditions, readings);
       if (res.success && res.pdf_url) {
-        showToast("Official ReportLab PDF generated. Opening file...");
+        showToast("Generated official Python ReportLab PDF!");
         window.open(res.pdf_url, "_blank");
       } else {
-        showToast(
-          "Failed to generate Python PDF: " + (res.error || "Unknown error"),
-        );
+        showToast("PDF generation failed: " + (res.error || res.message));
       }
     } finally {
       setIsGeneratingPdf(false);
     }
   };
 
-  // Open SQLite Audit History Modal
+  // Backend: Fetch SQLite Audit History
   const handleOpenAuditHistory = async () => {
     setIsAuditModalOpen(true);
     setIsLoadingAudit(true);
@@ -151,54 +181,36 @@ export function App() {
     }
   };
 
-  // Export JSON Report
+  // Client-side Export JSON
   const handleExportJson = () => {
-    const exportData = {
-      metadata: {
-        tool: "Metrolab OIML R-76 Verification Engine",
-        version: "2026.1",
-        exportedAt: new Date().toISOString(),
-        verificationHash: computation.verificationHash,
-      },
+    const payload = {
+      reportId,
+      exportedAt: new Date().toISOString(),
       instrument,
-      test_conditions: conditions,
+      conditions,
       readings,
-      metrology_evaluation: {
-        overall_pass: computation.overallPass,
-        compliance_score: computation.complianceScore,
-        risk_level: computation.riskLevel,
-        combined_uncertainty: computation.combinedUncertainty,
-        expanded_uncertainty: computation.expandedUncertainty,
-        repeatability_error: computation.repeatabilityError,
-        linearity_error: computation.linearityError,
-        hysteresis_error: computation.hysteresisError,
-        eccentricity_error: computation.eccentricityError,
-        point_results: computation.pointResults,
-        eccentricity_test: computation.eccentricitySummary,
-        repeatability_test: computation.repeatabilitySummary,
-      },
+      computation,
     };
-
-    const blob = new Blob([JSON.stringify(exportData, null, 2)], {
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {
       type: "application/json",
     });
     const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `Metrolab_${instrument.model.replace(/\s+/g, "_")}_${instrument.serialNumber}.json`;
-    link.click();
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${reportId}.json`;
+    a.click();
     URL.revokeObjectURL(url);
-    showToast("Exported official JSON report");
+    showToast("Exported dataset as JSON");
   };
 
-  // Export CSV Ledger
+  // Client-side Export CSV
   const handleExportCsv = () => {
     const headers = [
       "Load_kg",
       "Reading_kg",
       "Direction",
-      "Repeat_No",
       "Position",
+      "Repeat",
       "Error_kg",
       "MPE_kg",
       "Passed",
@@ -207,38 +219,36 @@ export function App() {
       p.load,
       p.reading,
       p.direction,
-      p.repeatNumber || 1,
       p.position || "center",
-      p.error,
-      p.mpe,
+      p.repeatNumber || 1,
+      p.error.toFixed(4),
+      p.mpe.toFixed(4),
       p.passed ? "PASS" : "FAIL",
     ]);
-
-    const csvContent = [
-      headers.join(","),
-      ...rows.map((r) => r.join(",")),
-    ].join("\n");
-    const blob = new Blob([csvContent], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
+    const csvContent =
+      "data:text/csv;charset=utf-8," +
+      [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
+    const encodedUri = encodeURI(csvContent);
     const link = document.createElement("a");
-    link.href = url;
-    link.download = `Metrolab_Readings_${instrument.serialNumber}.csv`;
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `${reportId}_readings.csv`);
+    document.body.appendChild(link);
     link.click();
-    URL.revokeObjectURL(url);
-    showToast("Exported CSV readings ledger");
+    document.body.removeChild(link);
+    showToast("Exported readings ledger as CSV");
   };
 
   return (
-    <div className="min-h-screen bg-[#F8FAFC] text-[#0F172A] flex flex-col font-sans">
-      {/* Toast Notification */}
+    <div className="min-h-screen bg-[#F8FAFC] text-[#0F172A] font-sans flex flex-col antialiased selection:bg-blue-100 selection:text-blue-900">
+      {/* Toast Alert Notification */}
       {toastMessage && (
-        <div className="fixed bottom-6 right-6 z-50 bg-[#0F172A] text-white text-xs px-4 py-2.5 rounded-md shadow-lg flex items-center space-x-2 border border-slate-700 animate-fade-in no-print">
+        <div className="fixed bottom-5 right-5 z-50 flex items-center space-x-2 bg-[#0F172A] text-white text-xs px-4 py-2.5 rounded-lg shadow-lg border border-slate-700 animate-in slide-in-from-bottom-2 no-print">
           <CheckCircle2 className="w-4 h-4 text-emerald-400" />
           <span>{toastMessage}</span>
         </div>
       )}
 
-      {/* Main Top Header & Stage Navigation */}
+      {/* Main Global Navigation & Enterprise Header */}
       <Header
         currentTab={currentTab}
         onTabChange={setCurrentTab}
@@ -251,7 +261,70 @@ export function App() {
         onExportCsv={handleExportCsv}
         backendOnline={backendOnline}
         onOpenAuditHistory={handleOpenAuditHistory}
+        onOpenAttachments={() => setIsAttachmentModalOpen(true)}
       />
+
+      {/* Real Role Switcher & User Session Header */}
+      <AuthRoleSwitcher
+        currentUser={currentUser}
+        onUserChange={setCurrentUser}
+        onOpenReviewerQueue={() => setIsReviewerModalOpen(true)}
+        onOpenOwnerPortal={() => setIsOwnerModalOpen(true)}
+        onNotification={showToast}
+      />
+
+      {/* Live Backend Telemetry Strip */}
+      {backendOnline && dashboardStats && (
+        <div className="bg-white border-b border-[#E2E8F0] px-4 sm:px-6 lg:px-8 py-2 text-xs flex items-center justify-between no-print">
+          <div className="flex items-center space-x-4">
+            <span className="font-semibold text-slate-500 uppercase tracking-wider text-[10px] flex items-center space-x-1">
+              <Activity className="w-3 h-3 text-emerald-600" />
+              <span>Live Laboratory Telemetry:</span>
+            </span>
+            <span className="text-slate-700">
+              Fleet: <strong className="font-mono text-slate-900">{dashboardStats.total_instruments || 0}</strong> scales
+            </span>
+            <span>·</span>
+            <span className="text-slate-700">
+              Evaluations: <strong className="font-mono text-slate-900">{dashboardStats.total_evaluations || 0}</strong>
+            </span>
+            <span>·</span>
+            <span className="text-slate-700">
+              Statutory Pass Rate: <strong className="font-mono text-emerald-700 font-semibold">{dashboardStats.pass_rate || 100}%</strong>
+            </span>
+            <span>·</span>
+            <span className="text-slate-700">
+              Expiring &lt;30d: <strong className="font-mono text-amber-700 font-semibold">{dashboardStats.expiring_soon_count || 0}</strong>
+            </span>
+          </div>
+
+          <div className="flex items-center space-x-2">
+            <button
+              onClick={() => setIsReviewerModalOpen(true)}
+              className="text-[11px] text-blue-600 hover:text-blue-800 font-medium hover:underline flex items-center space-x-1"
+            >
+              <ShieldCheck className="w-3.5 h-3.5" />
+              <span>Reviewer Queue</span>
+            </button>
+            <span>·</span>
+            <button
+              onClick={() => setIsOwnerModalOpen(true)}
+              className="text-[11px] text-emerald-600 hover:text-emerald-800 font-medium hover:underline flex items-center space-x-1"
+            >
+              <Building className="w-3.5 h-3.5" />
+              <span>Owner Fleet</span>
+            </button>
+            <span>·</span>
+            <button
+              onClick={() => setIsAttachmentModalOpen(true)}
+              className="text-[11px] text-slate-600 hover:text-slate-800 font-medium hover:underline flex items-center space-x-1"
+            >
+              <Paperclip className="w-3.5 h-3.5" />
+              <span>Evidence Attachments</span>
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Stage Sub-bar / Step Navigator */}
       <div className="bg-white border-b border-[#E2E8F0] py-2 px-4 sm:px-6 lg:px-8 no-print">
@@ -345,6 +418,29 @@ export function App() {
           />
         )}
       </main>
+
+      {/* Reviewer Queue Workflow Modal */}
+      <ReviewerQueueModal
+        isOpen={isReviewerModalOpen}
+        onClose={() => setIsReviewerModalOpen(false)}
+        onNotification={showToast}
+      />
+
+      {/* Owner Fleet Portal Modal */}
+      <OwnerPortalModal
+        isOpen={isOwnerModalOpen}
+        onClose={() => setIsOwnerModalOpen(false)}
+        ownerName={currentUser?.full_name || "Essae Digitronics"}
+        onNotification={showToast}
+      />
+
+      {/* Attachment Upload & Download Modal */}
+      <AttachmentUploadModal
+        isOpen={isAttachmentModalOpen}
+        onClose={() => setIsAttachmentModalOpen(false)}
+        evaluationId="eval_seed_001"
+        onNotification={showToast}
+      />
 
       {/* SQLite Audit Trail Modal */}
       <AuditHistoryModal

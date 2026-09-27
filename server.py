@@ -1,6 +1,7 @@
 """
-Metrolab Unified Server & API Bridge
-Serves both the modern React Web Interface and the Python OIML R-76 backend on http://localhost:8000
+Metrolab Enterprise Server (SIH-26035)
+Full REST API with Real Authentication, RBAC, Database CRUD, OIML R-76 Validation,
+Review Workflow, Owner Filtering, Attachments, Audit Trail, and ReportLab PDF Generation.
 """
 
 import os
@@ -9,92 +10,418 @@ import json
 import sqlite3
 import datetime
 import mimetypes
+import secrets
+import hashlib
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import urllib.parse
 
-# Import calculation and report generation routines from prototype_sih26035
+import db
+import auth_security as auth
+import backend_oiml
 import prototype_sih26035 as proto
 
 PORT = 8000
 BASE_DIR = Path(__file__).parent.resolve()
 FRONTEND_DIST = BASE_DIR / "frontend" / "dist"
 REPORTS_DIR = BASE_DIR / "reports"
-DB_PATH = str(BASE_DIR / "nawi_audit.db")
-SAMPLE_FILE = BASE_DIR / "sample_input.json"
+UPLOADS_DIR = BASE_DIR / "uploads"
 
 os.makedirs(REPORTS_DIR, exist_ok=True)
-proto.init_db(DB_PATH)
+os.makedirs(UPLOADS_DIR, exist_ok=True)
 
-class MetrolabApiHandler(BaseHTTPRequestHandler):
-    def _set_cors_headers(self, content_type="application/json"):
-        self.send_response(200)
+# Ensure DB is initialized and seeded
+db.init_db()
+db.seed_database()
+
+class MetrolabServerHandler(BaseHTTPRequestHandler):
+    def _set_cors_headers(self, status=200, content_type="application/json"):
+        self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         self.end_headers()
 
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         self.end_headers()
 
+    def get_auth_user(self):
+        """Extracts and verifies JWT token from Authorization header."""
+        auth_header = self.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return None
+        token = auth_header.split(" ", 1)[1].strip()
+        payload = auth.verify_jwt_token(token)
+        if not payload:
+            return None
+        return payload
+
+    def parse_json_body(self):
+        content_length = int(self.headers.get("Content-Length", 0))
+        if content_length == 0:
+            return {}
+        raw = self.rfile.read(content_length)
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except Exception:
+            return {}
+
+    def send_json(self, data, status=200):
+        self._set_cors_headers(status=status)
+        self.wfile.write(json.dumps(data, default=str).encode("utf-8"))
+
+    def send_error_json(self, message, status=400):
+        self._set_cors_headers(status=status)
+        self.wfile.write(json.dumps({"error": message, "success": False}).encode("utf-8"))
+
+    # =========================================================================
+    # HTTP GET HANDLER
+    # =========================================================================
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
 
-        # ==========================================
-        # 1. API ENDPOINTS (/api/...)
-        # ==========================================
+        # 1. API Health & Status
         if path == "/api/status":
-            self._set_cors_headers()
-            stats = proto.get_statistics(DB_PATH)
-            resp = {
+            conn = db.get_db()
+            total_inst = conn.execute("SELECT COUNT(*) FROM instruments").fetchone()[0]
+            total_eval = conn.execute("SELECT COUNT(*) FROM evaluations").fetchone()[0]
+            conn.close()
+            self.send_json({
                 "status": "online",
-                "engine": "OIML R-76 SIH-26035 Backend",
-                "database": DB_PATH,
-                "reports_count": len(list(REPORTS_DIR.glob("*"))),
-                "stats": stats
+                "engine": "OIML R-76 SIH-26035 Metrolab Backend",
+                "instruments_count": total_inst,
+                "evaluations_count": total_eval,
+                "server_time": datetime.datetime.now().isoformat()
+            })
+            return
+
+        # 2. Authentication: Get Current Profile (/api/auth/me)
+        elif path == "/api/auth/me":
+            user = self.get_auth_user()
+            if not user:
+                self.send_error_json("Unauthorized", 401)
+                return
+            conn = db.get_db()
+            row = conn.execute("SELECT id, username, email, full_name, role, organization, badge_id FROM users WHERE id = ?", (user["sub"],)).fetchone()
+            conn.close()
+            if not row:
+                self.send_error_json("User not found", 404)
+                return
+            self.send_json({"user": dict(row)})
+            return
+
+        # 3. Authentication: Users List (/api/auth/users) - Admin Only
+        elif path == "/api/auth/users":
+            user = self.get_auth_user()
+            if not user or user.get("role") != "ADMIN":
+                self.send_error_json("Unauthorized: Admin required", 401)
+                return
+            conn = db.get_db()
+            rows = conn.execute("SELECT id, username, email, full_name, role, organization, badge_id, is_active, created_at FROM users ORDER BY role, full_name").fetchall()
+            conn.close()
+            self.send_json({"users": [dict(r) for r in rows]})
+            return
+
+        # 4. Live Dashboard Stats (/api/dashboard/stats)
+        elif path == "/api/dashboard/stats":
+            user = self.get_auth_user()
+            conn = db.get_db()
+            owner_filter = " WHERE owner_id = ?" if user and user["role"] == "OWNER" else ""
+            params = (user["sub"],) if user and user["role"] == "OWNER" else ()
+
+            total_instruments = conn.execute(f"SELECT COUNT(*) FROM instruments{owner_filter}", params).fetchone()[0]
+            classes_breakdown = dict(conn.execute(f"SELECT accuracy_class, COUNT(*) FROM instruments{owner_filter} GROUP BY accuracy_class", params).fetchall())
+            inst_status_breakdown = dict(conn.execute(f"SELECT status, COUNT(*) FROM instruments{owner_filter} GROUP BY status", params).fetchall())
+
+            eval_query = """
+            SELECT e.status, e.conformity, e.compliance_score, e.risk_level
+            FROM evaluations e
+            JOIN instruments i ON e.instrument_id = i.id
+            """
+            eval_params = ()
+            if user and user["role"] == "OWNER":
+                eval_query += " WHERE i.owner_id = ?"
+                eval_params = (user["sub"],)
+
+            eval_rows = conn.execute(eval_query, eval_params).fetchall()
+            total_evals = len(eval_rows)
+            passed_evals = sum(1 for r in eval_rows if r["conformity"] == 1)
+            pass_rate = round((passed_evals / total_evals * 100), 1) if total_evals > 0 else 0.0
+            avg_score = round(sum(r["compliance_score"] for r in eval_rows) / total_evals, 1) if total_evals > 0 else 0.0
+
+            eval_status_breakdown = {}
+            for r in eval_rows:
+                s = r["status"]
+                eval_status_breakdown[s] = eval_status_breakdown.get(s, 0) + 1
+
+            risk_breakdown = {"LOW": 0, "MEDIUM": 0, "HIGH": 0, "CRITICAL": 0}
+            for r in eval_rows:
+                rk = r["risk_level"] or "LOW"
+                risk_breakdown[rk] = risk_breakdown.get(rk, 0) + 1
+
+            today_str = datetime.datetime.now().strftime('%Y-%m-%d')
+            in_30_days = (datetime.datetime.now() + datetime.timedelta(days=30)).strftime('%Y-%m-%d')
+            expiring_soon_query = f"""
+            SELECT COUNT(*) FROM instruments 
+            WHERE next_verification_due <= ? AND next_verification_due >= ?
+            """
+            exp_params = [in_30_days, today_str]
+            if user and user["role"] == "OWNER":
+                expiring_soon_query += " AND owner_id = ?"
+                exp_params.append(user["sub"])
+            expiring_count = conn.execute(expiring_soon_query, tuple(exp_params)).fetchone()[0]
+
+            recent_logs = conn.execute("""
+            SELECT a.id, a.action, a.entity_type, a.entity_id, a.timestamp, u.full_name as user_name, u.role as user_role
+            FROM audit_logs a
+            LEFT JOIN users u ON a.user_id = u.id
+            ORDER BY a.timestamp DESC LIMIT 10
+            """).fetchall()
+
+            conn.close()
+
+            stats_dict = {
+                "total_instruments": total_instruments,
+                "total_evaluations": total_evals,
+                "approved_evaluations": eval_status_breakdown.get("APPROVED", 0),
+                "pass_rate": pass_rate,
+                "avg_compliance_score": avg_score,
+                "expiring_soon_count": expiring_count,
+                "classes_breakdown": classes_breakdown,
+                "instruments_status": inst_status_breakdown,
+                "evaluations_status": eval_status_breakdown,
+                "risk_distribution": risk_breakdown
             }
-            self.wfile.write(json.dumps(resp).encode("utf-8"))
+
+            self.send_json({
+                **stats_dict,
+                "stats": stats_dict,
+                "recent_activity": [dict(r) for r in recent_logs]
+            })
             return
 
-        elif path == "/api/sample":
-            self._set_cors_headers()
-            if SAMPLE_FILE.exists():
-                with open(SAMPLE_FILE, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                self.wfile.write(json.dumps(data).encode("utf-8"))
-            else:
-                self.wfile.write(json.dumps({"error": "sample_input.json not found"}).encode("utf-8"))
+        # 5. Instruments CRUD: List (/api/instruments) - With Real Owner Scoping!
+        elif path == "/api/instruments":
+            user = self.get_auth_user()
+            conn = db.get_db()
+
+            query_sql = """
+            SELECT i.*, u.full_name as owner_name, u.organization as owner_organization
+            FROM instruments i
+            LEFT JOIN users u ON i.owner_id = u.id
+            WHERE 1=1
+            """
+            params = []
+
+            if user and user["role"] == "OWNER":
+                query_sql += " AND i.owner_id = ?"
+                params.append(user["sub"])
+
+            q = query.get("q", [""])[0].strip()
+            if q:
+                query_sql += " AND (i.serial_number LIKE ? OR i.model LIKE ? OR i.manufacturer LIKE ?)"
+                params.extend([f"%{q}%", f"%{q}%", f"%{q}%"])
+
+            cls = query.get("class", [""])[0].strip()
+            if cls:
+                query_sql += " AND i.accuracy_class = ?"
+                params.append(cls)
+
+            status_f = query.get("status", [""])[0].strip()
+            if status_f:
+                query_sql += " AND i.status = ?"
+                params.append(status_f)
+
+            query_sql += " ORDER BY i.updated_at DESC"
+            rows = conn.execute(query_sql, tuple(params)).fetchall()
+            conn.close()
+
+            self.send_json({"instruments": [dict(r) for r in rows]})
             return
 
-        elif path == "/api/history":
-            self._set_cors_headers()
-            serial = query.get("serial", [""])[0]
-            if serial:
-                history = proto.get_instrument_history(serial, DB_PATH)
-            else:
-                conn = sqlite3.connect(DB_PATH)
-                conn.row_factory = sqlite3.Row
-                c = conn.cursor()
-                c.execute("SELECT report_id, instrument_serial, instrument_model, capacity, class, conformity, compliance_score, risk_level, created_at, inspector_name FROM reports ORDER BY created_at DESC LIMIT 20")
-                rows = c.fetchall()
+        # 6. Instrument Details: Get One (/api/instruments/<id>)
+        elif path.startswith("/api/instruments/"):
+            inst_id = path.split("/")[3]
+            user = self.get_auth_user()
+            conn = db.get_db()
+
+            inst = conn.execute("""
+            SELECT i.*, u.full_name as owner_name, u.organization as owner_organization
+            FROM instruments i
+            LEFT JOIN users u ON i.owner_id = u.id
+            WHERE i.id = ?
+            """, (inst_id,)).fetchone()
+
+            if not inst:
                 conn.close()
-                history = [dict(r) for r in rows]
-            self.wfile.write(json.dumps(history).encode("utf-8"))
+                self.send_error_json("Instrument not found", 404)
+                return
+
+            if user and user["role"] == "OWNER" and inst["owner_id"] != user["sub"]:
+                conn.close()
+                self.send_error_json("Access denied: Not your instrument", 403)
+                return
+
+            evals = conn.execute("""
+            SELECT e.*, u.full_name as inspector_name
+            FROM evaluations e
+            LEFT JOIN users u ON e.inspector_id = u.id
+            WHERE e.instrument_id = ?
+            ORDER BY e.created_at DESC
+            """, (inst_id,)).fetchall()
+
+            conn.close()
+            self.send_json({
+                "instrument": dict(inst),
+                "evaluations": [dict(e) for e in evals]
+            })
             return
 
-        elif path == "/api/stats":
-            self._set_cors_headers()
-            stats = proto.get_statistics(DB_PATH)
-            self.wfile.write(json.dumps(stats).encode("utf-8"))
+        # 7. Evaluations CRUD: List (/api/evaluations) - With Role Filtering
+        elif path == "/api/evaluations":
+            user = self.get_auth_user()
+            conn = db.get_db()
+
+            query_sql = """
+            SELECT e.*, i.serial_number, i.model, i.manufacturer, i.accuracy_class, i.max_capacity, i.unit,
+                   u_ins.full_name as inspector_name, u_rev.full_name as reviewer_name,
+                   u_own.full_name as owner_name
+            FROM evaluations e
+            JOIN instruments i ON e.instrument_id = i.id
+            LEFT JOIN users u_ins ON e.inspector_id = u_ins.id
+            LEFT JOIN users u_rev ON e.reviewer_id = u_rev.id
+            LEFT JOIN users u_own ON i.owner_id = u_own.id
+            WHERE 1=1
+            """
+            params = []
+
+            if user and user["role"] == "OWNER":
+                query_sql += " AND i.owner_id = ?"
+                params.append(user["sub"])
+
+            status_f = query.get("status", [""])[0].strip()
+            if status_f:
+                query_sql += " AND e.status = ?"
+                params.append(status_f)
+
+            inst_f = query.get("instrument_id", [""])[0].strip()
+            if inst_f:
+                query_sql += " AND e.instrument_id = ?"
+                params.append(inst_f)
+
+            query_sql += " ORDER BY e.created_at DESC"
+            rows = conn.execute(query_sql, tuple(params)).fetchall()
+            conn.close()
+
+            self.send_json({"evaluations": [dict(r) for r in rows]})
             return
 
+        # 8. Evaluation Details: Get One (/api/evaluations/<id>)
+        elif path.startswith("/api/evaluations/"):
+            eval_id = path.split("/")[3]
+            user = self.get_auth_user()
+            conn = db.get_db()
+
+            ev = conn.execute("""
+            SELECT e.*, i.serial_number, i.model, i.manufacturer, i.accuracy_class, 
+                   i.max_capacity, i.min_capacity, i.e_interval, i.d_interval, i.unit,
+                   i.tare_capacity, i.type_approval_no, i.owner_id,
+                   u_ins.full_name as inspector_name, u_ins.badge_id as inspector_badge,
+                   u_rev.full_name as reviewer_name, u_rev.badge_id as reviewer_badge,
+                   u_own.full_name as owner_name, u_own.organization as owner_organization
+            FROM evaluations e
+            JOIN instruments i ON e.instrument_id = i.id
+            LEFT JOIN users u_ins ON e.inspector_id = u_ins.id
+            LEFT JOIN users u_rev ON e.reviewer_id = u_rev.id
+            LEFT JOIN users u_own ON i.owner_id = u_own.id
+            WHERE e.id = ?
+            """, (eval_id,)).fetchone()
+
+            if not ev:
+                conn.close()
+                self.send_error_json("Evaluation not found", 404)
+                return
+
+            if user and user["role"] == "OWNER" and ev["owner_id"] != user["sub"]:
+                conn.close()
+                self.send_error_json("Access denied: Not your instrument evaluation", 403)
+                return
+
+            readings = conn.execute("""
+            SELECT id, test_type, load_val, reading, error, mpe, ratio, passed, direction, position, repeat_number
+            FROM test_readings
+            WHERE evaluation_id = ?
+            ORDER BY repeat_number, load_val, direction
+            """, (eval_id,)).fetchall()
+
+            attachments = conn.execute("""
+            SELECT id, filename, original_name, file_size, mime_type, file_hash, description, uploaded_at, uploader_id
+            FROM attachments
+            WHERE evaluation_id = ?
+            ORDER BY uploaded_at DESC
+            """, (eval_id,)).fetchall()
+
+            conn.close()
+
+            self.send_json({
+                "evaluation": dict(ev),
+                "readings": [dict(r) for r in readings],
+                "attachments": [dict(a) for a in attachments]
+            })
+            return
+
+        # 9. Attachments: Download File (/api/attachments/<id>/download)
+        elif path.startswith("/api/attachments/") and path.endswith("/download"):
+            att_id = path.split("/")[3]
+            conn = db.get_db()
+            att = conn.execute("SELECT * FROM attachments WHERE id = ?", (att_id,)).fetchone()
+            conn.close()
+
+            if not att or not os.path.exists(att["file_path"]):
+                self.send_error(404, "Attachment file not found")
+                return
+
+            mime = att["mime_type"] or "application/octet-stream"
+            self.send_response(200)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Disposition", f'attachment; filename="{att["original_name"]}"')
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+            self.end_headers()
+            with open(att["file_path"], "rb") as f:
+                self.wfile.write(f.read())
+            return
+
+        # 10. Audit Logs List (/api/audit_logs, /api/audit) - Admin & Reviewer Only
+        elif path in ("/api/audit_logs", "/api/audit"):
+            user = self.get_auth_user()
+            if not user or user["role"] not in ("ADMIN", "REVIEWER"):
+                self.send_error_json("Access forbidden: Requires Admin or Reviewer role", 403)
+                return
+
+            conn = db.get_db()
+            logs = conn.execute("""
+            SELECT a.*, u.username, u.full_name, u.role
+            FROM audit_logs a
+            LEFT JOIN users u ON a.user_id = u.id
+            ORDER BY a.timestamp DESC
+            LIMIT 100
+            """).fetchall()
+            conn.close()
+
+            logs_list = [dict(l) for l in logs]
+            self.send_json({"audit_logs": logs_list, "logs": logs_list})
+            return
+
+        # 11. Reports Serving (/api/reports/<filename>)
         elif path.startswith("/api/reports/"):
             filename = os.path.basename(path)
             file_path = REPORTS_DIR / filename
@@ -107,9 +434,7 @@ class MetrolabApiHandler(BaseHTTPRequestHandler):
                 self.send_error(404, "Report file not found")
             return
 
-        # ==========================================
-        # 2. STATIC FRONTEND SPA SERVING
-        # ==========================================
+        # 12. Static Frontend Single Page Application
         else:
             rel_path = path.lstrip("/")
             target_file = FRONTEND_DIST / rel_path
@@ -135,109 +460,743 @@ class MetrolabApiHandler(BaseHTTPRequestHandler):
                 with open(target_file, "rb") as f:
                     self.wfile.write(f.read())
             else:
-                self.send_error(404, "Frontend build not found. Run 'npm run build' in frontend directory.")
+                self.send_error(404, "Frontend build not found.")
 
+    # =========================================================================
+    # HTTP POST HANDLER
+    # =========================================================================
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        body = self.parse_json_body()
 
-        content_length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(content_length)
+        # 1. Authentication: Login (/api/auth/login)
+        if path == "/api/auth/login":
+            username = body.get("username", "").strip()
+            password = body.get("password", "")
 
-        try:
-            payload = json.loads(body.decode("utf-8"))
-        except Exception:
-            payload = {}
+            if not username or not password:
+                self.send_error_json("Username and password are required", 400)
+                return
 
-        if path == "/api/save_audit":
-            self._set_cors_headers()
-            report_id = payload.get("report_id", f"REP-{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}")
-            instrument = payload.get("instrument", {})
-            test_conditions = payload.get("test_conditions", {})
-            calculations = payload.get("calculations", {})
-            conformity = payload.get("conformity", False)
+            conn = db.get_db()
+            user = conn.execute("SELECT * FROM users WHERE username = ? AND is_active = 1", (username,)).fetchone()
+            conn.close()
 
-            report_data = {
-                "report_id": report_id,
-                "instrument": instrument,
-                "test_conditions": test_conditions,
-                "calculations": calculations,
-                "conformity": conformity,
-                "generated_at": payload.get("generated_at", datetime.datetime.now().isoformat()),
-                "hash": calculations.get("verification_hash", proto.generate_hash(report_id))
-            }
+            if not user or not db.verify_password(password, user["salt"], user["password_hash"]):
+                self.send_error_json("Invalid credentials", 401)
+                return
 
-            proto.save_to_db(report_data, DB_PATH)
+            token = auth.create_jwt_token({
+                "sub": user["id"],
+                "username": user["username"],
+                "role": user["role"],
+                "full_name": user["full_name"],
+                "org": user["organization"]
+            })
 
-            self.wfile.write(json.dumps({
+            db.log_audit(user["id"], "LOGIN", "USER", user["id"], {"role": user["role"]}, self.client_address[0])
+
+            self.send_json({
                 "success": True,
-                "report_id": report_id,
-                "message": "Saved to SQLite audit database nawi_audit.db",
-                "database": DB_PATH
-            }).encode("utf-8"))
+                "token": token,
+                "user": {
+                    "id": user["id"],
+                    "username": user["username"],
+                    "email": user["email"],
+                    "full_name": user["full_name"],
+                    "role": user["role"],
+                    "organization": user["organization"],
+                    "badge_id": user["badge_id"]
+                }
+            })
             return
 
-        elif path == "/api/generate_pdf":
-            self._set_cors_headers()
-            instrument = payload.get("instrument", {})
-            readings = payload.get("readings", [])
-            test_conditions = payload.get("test_conditions", {})
+        # 2. Authentication: Logout (/api/auth/logout)
+        elif path == "/api/auth/logout":
+            user = self.get_auth_user()
+            if user:
+                db.log_audit(user["sub"], "LOGOUT", "USER", user["sub"], {}, self.client_address[0])
+            self.send_json({"success": True, "message": "Logged out successfully"})
+            return
 
-            proto_input = {
-                "instrument": {
-                    "manufacturer": instrument.get("manufacturer", "Essae"),
-                    "model": instrument.get("model", "DS-852"),
-                    "serial_number": instrument.get("serialNumber") or instrument.get("serial_number", "DS-001"),
-                    "type_approval_no": instrument.get("typeApprovalNo") or instrument.get("type_approval_no", "IND/LM/01"),
-                    "max_capacity": float(instrument.get("maxCapacity") or instrument.get("max_capacity", 15.0)),
-                    "min_capacity": float(instrument.get("minCapacity") or instrument.get("min_capacity", 0.04)),
-                    "verification_scale_interval_e": float(instrument.get("verificationScaleIntervalE") or instrument.get("verification_scale_interval_e", 0.005)),
-                    "accuracy_class": instrument.get("accuracyClass") or instrument.get("accuracy_class", "III")
-                },
-                "test_conditions": {
-                    "temperature_c": float(test_conditions.get("temperatureC") or test_conditions.get("temperature_c", 25.0)),
-                    "humidity_percent": float(test_conditions.get("humidityPercent") or test_conditions.get("humidity_percent", 55.0)),
-                    "barometric_pressure_hpa": float(test_conditions.get("barometricPressureHpa") or test_conditions.get("barometric_pressure_hpa", 1013.0)),
-                    "reference_mass_kg": float(instrument.get("maxCapacity") or 15.0),
-                    "test_location": test_conditions.get("testLocation") or test_conditions.get("test_location", "RRSL"),
-                    "inspector_name": test_conditions.get("inspectorName") or test_conditions.get("inspector_name", "Inspector"),
-                    "inspector_id": test_conditions.get("inspectorId") or test_conditions.get("inspector_id", "INS-001")
-                },
-                "readings": [
-                    {
-                        "load_kg": float(r.get("load") or r.get("load_kg", 0)),
-                        "reading": float(r.get("reading", 0)),
-                        "direction": r.get("direction", "increasing"),
-                        "repeat_number": int(r.get("repeatNumber") or r.get("repeat_number", 1)),
-                        "position": r.get("position", "center")
-                    }
-                    for r in readings
-                ]
+        # 3. Instruments CRUD: Create (/api/instruments)
+        elif path == "/api/instruments":
+            user = self.get_auth_user()
+            if not user or user["role"] not in ("ADMIN", "INSPECTOR", "OWNER"):
+                self.send_error_json("Unauthorized to create instruments", 403)
+                return
+
+            serial = body.get("serial_number", "").strip()
+            model = body.get("model", "").strip()
+            manufacturer = body.get("manufacturer", "").strip()
+            accuracy_class = body.get("accuracy_class", "III").strip()
+            max_cap = float(body.get("max_capacity", 0))
+            min_cap = float(body.get("min_capacity", 0))
+            e_val = float(body.get("e_interval", 0.001))
+            d_val = float(body.get("d_interval", e_val))
+            tare = float(body.get("tare_capacity", max_cap))
+            unit = body.get("unit", "kg")
+            type_app = body.get("type_approval_no", "")
+            year = int(body.get("year_of_manufacture", datetime.datetime.now().year))
+            country = body.get("country_of_origin", "India")
+            owner_id = user["sub"] if user["role"] == "OWNER" else body.get("owner_id", user["sub"])
+
+            if not serial or not model or max_cap <= 0 or e_val <= 0:
+                self.send_error_json("Invalid instrument parameters: serial, model, capacity and e required", 400)
+                return
+
+            conn = db.get_db()
+            existing = conn.execute("SELECT id FROM instruments WHERE serial_number = ?", (serial,)).fetchone()
+            if existing:
+                conn.close()
+                self.send_error_json(f"Instrument with serial '{serial}' already exists", 409)
+                return
+
+            inst_id = f"inst_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(4)}"
+            now = datetime.datetime.now().isoformat()
+
+            conn.execute("""
+            INSERT INTO instruments (
+                id, serial_number, model, manufacturer, accuracy_class, max_capacity, min_capacity,
+                e_interval, d_interval, unit, tare_capacity, type_approval_no, year_of_manufacture,
+                country_of_origin, owner_id, status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'REGISTERED', ?, ?)
+            """, (
+                inst_id, serial, model, manufacturer, accuracy_class, max_cap, min_cap,
+                e_val, d_val, unit, tare, type_app, year, country, owner_id, now, now
+            ))
+            conn.commit()
+            conn.close()
+
+            db.log_audit(user["sub"], "CREATE", "INSTRUMENT", inst_id, {"serial": serial, "model": model}, self.client_address[0])
+            self.send_json({"success": True, "instrument_id": inst_id, "message": "Instrument registered successfully"}, 201)
+            return
+
+        # 4. Evaluations CRUD: Create Draft (/api/evaluations)
+        elif path == "/api/evaluations":
+            user = self.get_auth_user()
+            if not user or user["role"] not in ("ADMIN", "INSPECTOR"):
+                self.send_error_json("Only Inspectors and Admins can conduct metrological evaluations", 403)
+                return
+
+            instrument_id = body.get("instrument_id")
+            if not instrument_id:
+                self.send_error_json("Instrument ID required", 400)
+                return
+
+            conn = db.get_db()
+            inst = conn.execute("SELECT * FROM instruments WHERE id = ?", (instrument_id,)).fetchone()
+            if not inst:
+                conn.close()
+                self.send_error_json("Instrument not found", 404)
+                return
+
+            eval_id = f"eval_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(4)}"
+            now = datetime.datetime.now().isoformat()
+
+            test_date = body.get("test_date", now[:10])
+            test_location = body.get("test_location", "Regional Reference Standards Laboratory")
+            temp_c = float(body.get("temperature_c", 25.0))
+            humidity = float(body.get("humidity_percent", 55.0))
+            pressure = float(body.get("pressure_hpa", 1013.25))
+            gravity = float(body.get("gravity_mps2", 9.7915))
+            ref_std = body.get("reference_standard", "OIML Class F1 Weights")
+            trace_no = body.get("standards_traceability_no", "NPLI/LM/MASS/2026/01")
+
+            conn.execute("""
+            INSERT INTO evaluations (
+                id, instrument_id, inspector_id, status, test_date, test_location,
+                temperature_c, humidity_percent, pressure_hpa, gravity_mps2,
+                reference_standard, standards_traceability_no, created_at, updated_at
+            ) VALUES (?, ?, ?, 'DRAFT', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                eval_id, instrument_id, user["sub"], test_date, test_location,
+                temp_c, humidity, pressure, gravity, ref_std, trace_no, now, now
+            ))
+
+            conn.execute("UPDATE instruments SET status = 'PENDING_VERIFICATION', updated_at = ? WHERE id = ?", (now, instrument_id))
+            conn.commit()
+            conn.close()
+
+            db.log_audit(user["sub"], "CREATE", "EVALUATION", eval_id, {"instrument": inst["serial_number"]}, self.client_address[0])
+            self.send_json({"success": True, "evaluation_id": eval_id, "message": "Draft evaluation created"}, 201)
+            return
+
+        # 5. Real Test Readings Storage & Server-side Recalculation
+        elif path.startswith("/api/evaluations/") and path.endswith("/readings"):
+            eval_id = path.split("/")[3]
+            user = self.get_auth_user()
+            if not user or user["role"] not in ("ADMIN", "INSPECTOR"):
+                self.send_error_json("Only Inspectors and Admins can log readings", 403)
+                return
+
+            conn = db.get_db()
+            ev = conn.execute("SELECT e.*, i.* FROM evaluations e JOIN instruments i ON e.instrument_id = i.id WHERE e.id = ?", (eval_id,)).fetchone()
+            if not ev:
+                conn.close()
+                self.send_error_json("Evaluation not found", 404)
+                return
+
+            if ev["status"] in ("APPROVED", "REJECTED"):
+                conn.close()
+                self.send_error_json("Cannot modify readings on a locked evaluation", 400)
+                return
+
+            readings_list = body.get("readings", [])
+            if not readings_list:
+                conn.close()
+                self.send_error_json("No readings provided", 400)
+                return
+
+            inst_dict = {
+                "max_capacity": ev["max_capacity"],
+                "e_interval": ev["e_interval"],
+                "accuracy_class": ev["accuracy_class"],
+                "serial_number": ev["serial_number"],
+                "model": ev["model"]
+            }
+            results = backend_oiml.validate_oiml_compliance(inst_dict, readings_list)
+
+            conn.execute("DELETE FROM test_readings WHERE evaluation_id = ?", (eval_id,))
+            now = datetime.datetime.now().isoformat()
+
+            for pt in results["point_results"]:
+                rd_id = f"tr_{secrets.token_hex(6)}"
+                test_type = pt.get("test_type", "LOAD")
+                if test_type not in ("LOAD", "ECCENTRICITY", "REPEATABILITY"):
+                    test_type = "LOAD"
+                pos = pt.get("position", "center")
+                if pos not in ('center', 'front-left', 'front-right', 'back-left', 'back-right'):
+                    pos = 'center'
+                conn.execute("""
+                INSERT INTO test_readings (
+                    id, evaluation_id, test_type, load_val, reading, error, mpe, ratio, passed,
+                    direction, position, repeat_number, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    rd_id, eval_id, test_type, pt["load"], pt["reading"], pt["error"],
+                    pt["mpe"], pt["ratio"], 1 if pt["passed"] else 0,
+                    pt["direction"], pos, pt["repeat_number"], now
+                ))
+
+            conn.execute("""
+            UPDATE evaluations SET
+                repeatability_error = ?,
+                linearity_error = ?,
+                hysteresis_error = ?,
+                eccentricity_error = ?,
+                combined_uncertainty = ?,
+                expanded_uncertainty = ?,
+                compliance_score = ?,
+                risk_level = ?,
+                conformity = ?,
+                verification_hash = ?,
+                updated_at = ?
+            WHERE id = ?
+            """, (
+                results["repeatability_error"],
+                results["linearity_error"],
+                results["hysteresis_error"],
+                results["eccentricity_error"],
+                results["combined_uncertainty"],
+                results["expanded_uncertainty"],
+                results["compliance_score"],
+                results["risk_level"],
+                results["conformity"],
+                results["verification_hash"],
+                now, eval_id
+            ))
+
+            conn.commit()
+            conn.close()
+
+            db.log_audit(user["sub"], "BATCH_INSERT", "EVALUATION", eval_id, {
+                "points_count": len(results["point_results"]),
+                "compliance_score": results["compliance_score"],
+                "conformity": results["conformity"]
+            }, self.client_address[0])
+
+            self.send_json({
+                "success": True,
+                "inserted_count": len(results["point_results"]),
+                "message": f"Successfully stored {len(results['point_results'])} readings and verified OIML compliance",
+                "calculations": results
+            })
+            return
+
+        # Real Backend OIML Validation Recalculate (/api/evaluations/<id>/calculate)
+        elif path.startswith("/api/evaluations/") and path.endswith("/calculate"):
+            eval_id = path.split("/")[3]
+            user = self.get_auth_user()
+            if not user or user["role"] not in ("ADMIN", "INSPECTOR", "REVIEWER"):
+                self.send_error_json("Unauthorized to run OIML calculations", 403)
+                return
+
+            conn = db.get_db()
+            ev = conn.execute("SELECT e.*, i.serial_number, i.model, i.max_capacity, i.e_interval, i.accuracy_class FROM evaluations e JOIN instruments i ON e.instrument_id = i.id WHERE e.id = ?", (eval_id,)).fetchone()
+            if not ev:
+                conn.close()
+                self.send_error_json("Evaluation not found", 404)
+                return
+
+            inst_dict = {
+                "max_capacity": ev["max_capacity"],
+                "e_interval": ev["e_interval"],
+                "accuracy_class": ev["accuracy_class"],
+                "serial_number": ev["serial_number"],
+                "model": ev["model"]
             }
 
-            serial_clean = proto_input["instrument"]["serial_number"].replace("/", "_").replace(" ", "_")
-            temp_json_path = REPORTS_DIR / f"temp_{serial_clean}.json"
-            with open(temp_json_path, "w", encoding="utf-8") as f:
-                json.dump(proto_input, f, indent=2)
+            body_readings = body.get("readings") if isinstance(body, dict) else None
+            if not body_readings:
+                stored = conn.execute("SELECT * FROM test_readings WHERE evaluation_id = ?", (eval_id,)).fetchall()
+                body_readings = [dict(r) for r in stored]
+
+            if not body_readings:
+                conn.close()
+                self.send_error_json("No readings found for evaluation", 400)
+                return
+
+            results = backend_oiml.validate_oiml_compliance(inst_dict, body_readings)
+            now = datetime.datetime.now().isoformat()
+
+            conn.execute("""
+            UPDATE evaluations SET
+                repeatability_error = ?,
+                linearity_error = ?,
+                hysteresis_error = ?,
+                eccentricity_error = ?,
+                combined_uncertainty = ?,
+                expanded_uncertainty = ?,
+                compliance_score = ?,
+                risk_level = ?,
+                conformity = ?,
+                verification_hash = ?,
+                updated_at = ?
+            WHERE id = ?
+            """, (
+                results["repeatability_error"],
+                results["linearity_error"],
+                results["hysteresis_error"],
+                results["eccentricity_error"],
+                results["combined_uncertainty"],
+                results["expanded_uncertainty"],
+                results["compliance_score"],
+                results["risk_level"],
+                results["conformity"],
+                results["verification_hash"],
+                now, eval_id
+            ))
+            conn.commit()
+            conn.close()
+
+            db.log_audit(user["sub"], "CALCULATE", "EVALUATION", eval_id, {
+                "compliance_score": results["compliance_score"],
+                "conformity": results["conformity"]
+            }, self.client_address[0])
+
+            self.send_json({
+                "success": True,
+                "calculations": results
+            })
+            return
+
+        # 6. Real Review Workflow: Submit for Review (/api/evaluations/<id>/submit)
+        elif path.startswith("/api/evaluations/") and path.endswith("/submit"):
+            eval_id = path.split("/")[3]
+            user = self.get_auth_user()
+            if not user or user["role"] not in ("ADMIN", "INSPECTOR"):
+                self.send_error_json("Only Inspectors and Admins can submit evaluations for review", 403)
+                return
+
+            conn = db.get_db()
+            ev = conn.execute("SELECT * FROM evaluations WHERE id = ?", (eval_id,)).fetchone()
+            if not ev:
+                conn.close()
+                self.send_error_json("Evaluation not found", 404)
+                return
+
+            readings_count = conn.execute("SELECT COUNT(*) FROM test_readings WHERE evaluation_id = ?", (eval_id,)).fetchone()[0]
+            if readings_count == 0:
+                conn.close()
+                self.send_error_json("Cannot submit evaluation with zero test readings", 400)
+                return
+
+            now = datetime.datetime.now().isoformat()
+            conn.execute("""
+            UPDATE evaluations SET status = 'SUBMITTED', submitted_at = ?, updated_at = ? WHERE id = ?
+            """, (now, now, eval_id))
+            conn.commit()
+            conn.close()
+
+            db.log_audit(user["sub"], "SUBMIT_FOR_REVIEW", "EVALUATION", eval_id, {}, self.client_address[0])
+            self.send_json({"success": True, "status": "SUBMITTED", "message": "Evaluation submitted to Reviewer queue"})
+            return
+
+        # 7. Real Review Workflow: Approve / Reject (/api/evaluations/<id>/review)
+        elif path.startswith("/api/evaluations/") and path.endswith("/review"):
+            eval_id = path.split("/")[3]
+            user = self.get_auth_user()
+            if not user or user["role"] not in ("ADMIN", "REVIEWER"):
+                self.send_error_json("Access forbidden: Only Reviewers and Admins can approve/reject evaluations", 403)
+                return
+
+            verdict = (body.get("verdict") or body.get("action") or "").upper()
+            if verdict in ("APPROVE", "APPROVED"):
+                verdict = "APPROVE"
+            elif verdict in ("REJECT", "REJECTED"):
+                verdict = "REJECT"
+            comments = body.get("comments", "").strip()
+
+            if verdict not in ("APPROVE", "REJECT"):
+                self.send_error_json("Verdict must be either 'APPROVE' or 'REJECT'", 400)
+                return
+
+            if verdict == "REJECT" and not comments:
+                self.send_error_json("Rejection reason comments are required", 400)
+                return
+
+            conn = db.get_db()
+            ev = conn.execute("SELECT e.*, i.serial_number, i.accuracy_class FROM evaluations e JOIN instruments i ON e.instrument_id = i.id WHERE e.id = ?", (eval_id,)).fetchone()
+            if not ev:
+                conn.close()
+                self.send_error_json("Evaluation not found", 404)
+                return
+
+            now = datetime.datetime.now().isoformat()
+            today_str = now[:10]
+            next_year_str = (datetime.datetime.now() + datetime.timedelta(days=365)).strftime('%Y-%m-%d')
+
+            if verdict == "APPROVE":
+                new_status = "APPROVED"
+                cert_no = f"CERT-DL-2026-{ev['serial_number'].replace('/', '').replace('-', '')[-6:]}"
+                conn.execute("""
+                UPDATE evaluations SET 
+                    status = 'APPROVED', reviewer_id = ?, review_comments = ?, certificate_number = ?,
+                    reviewed_at = ?, updated_at = ?
+                WHERE id = ?
+                """, (user["sub"], comments or "OIML R-76 statutory requirements verified. Approved.", cert_no, now, now, eval_id))
+
+                conn.execute("""
+                UPDATE instruments SET 
+                    status = 'VERIFIED', last_verified_at = ?, next_verification_due = ?, updated_at = ?
+                WHERE id = ?
+                """, (today_str, next_year_str, now, ev["instrument_id"]))
+
+            else:
+                new_status = "REJECTED"
+                conn.execute("""
+                UPDATE evaluations SET 
+                    status = 'REJECTED', reviewer_id = ?, review_comments = ?, reviewed_at = ?, updated_at = ?
+                WHERE id = ?
+                """, (user["sub"], comments, now, now, eval_id))
+
+                conn.execute("""
+                UPDATE instruments SET status = 'REJECTED', updated_at = ? WHERE id = ?
+                """, (now, ev["instrument_id"]))
+
+            conn.commit()
+            conn.close()
+
+            audit_act = "REVIEW_APPROVE" if new_status == "APPROVED" else "REVIEW_REJECT"
+            db.log_audit(user["sub"], audit_act, "EVALUATION", eval_id, {"comments": comments}, self.client_address[0])
+            self.send_json({"success": True, "verdict": new_status, "status": new_status, "message": f"Evaluation {new_status.lower()} successfully"})
+            return
+
+        # 8. Real Attachment Upload: POST /api/evaluations/<id>/attachments
+        elif path.startswith("/api/evaluations/") and path.endswith("/attachments"):
+            eval_id = path.split("/")[3]
+            user = self.get_auth_user()
+            if not user:
+                self.send_error_json("Unauthorized", 401)
+                return
+
+            original_name = body.get("filename") or body.get("file_name") or f"attachment_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}.pdf"
+            file_data_base64 = body.get("file_data")
+            description = body.get("description", "")
+            mime_type = body.get("mime_type") or body.get("file_type") or "application/octet-stream"
+
+            if not file_data_base64:
+                self.send_error_json("File data (base64) required", 400)
+                return
 
             try:
-                proto.process_file(str(temp_json_path), str(REPORTS_DIR), no_db=False, gen_html=True, gen_csv=True)
-                pdf_name = f"temp_{serial_clean}_report.pdf"
-                html_name = f"temp_{serial_clean}_report.html"
+                import base64
+                file_bytes = base64.b64decode(file_data_base64)
+            except Exception:
+                self.send_error_json("Invalid base64 payload", 400)
+                return
 
-                self.wfile.write(json.dumps({
+            att_id = f"att_{secrets.token_hex(6)}"
+            safe_ext = os.path.splitext(original_name)[1]
+            saved_filename = f"{att_id}{safe_ext}"
+            file_path = UPLOADS_DIR / saved_filename
+
+            with open(file_path, "wb") as f:
+                f.write(file_bytes)
+
+            file_hash = hashlib.sha256(file_bytes).hexdigest()
+            now = datetime.datetime.now().isoformat()
+
+            conn = db.get_db()
+            conn.execute("""
+            INSERT INTO attachments (
+                id, evaluation_id, uploader_id, filename, original_name, file_path,
+                file_size, mime_type, file_hash, description, uploaded_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                att_id, eval_id, user["sub"], saved_filename, original_name,
+                str(file_path), len(file_bytes), mime_type, file_hash, description, now
+            ))
+            conn.commit()
+            conn.close()
+
+            db.log_audit(user["sub"], "UPLOAD_ATTACHMENT", "ATTACHMENT", att_id, {"filename": original_name, "eval_id": eval_id}, self.client_address[0])
+            self.send_json({"success": True, "attachment_id": att_id, "filename": original_name}, 201)
+            return
+
+        # 9. Generate ReportLab PDF with QR Code (/api/evaluations/<id>/generate_pdf)
+        elif path.startswith("/api/evaluations/") and path.endswith("/generate_pdf"):
+            eval_id = path.split("/")[3]
+            user = self.get_auth_user()
+            if not user:
+                self.send_error_json("Unauthorized", 401)
+                return
+
+            conn = db.get_db()
+            ev = conn.execute("""
+            SELECT e.*, i.*, u_ins.full_name as inspector_name, u_ins.badge_id as inspector_badge
+            FROM evaluations e
+            JOIN instruments i ON e.instrument_id = i.id
+            LEFT JOIN users u_ins ON e.inspector_id = u_ins.id
+            WHERE e.id = ?
+            """, (eval_id,)).fetchone()
+
+            if not ev:
+                conn.close()
+                self.send_error_json("Evaluation not found", 404)
+                return
+
+            readings = conn.execute("SELECT * FROM test_readings WHERE evaluation_id = ?", (eval_id,)).fetchall()
+            conn.close()
+
+            serial_clean = ev["serial_number"].replace("/", "_").replace("-", "_").replace(" ", "_")
+            pdf_filename = f"report_{serial_clean}_{eval_id}.pdf"
+            pdf_path = REPORTS_DIR / pdf_filename
+
+            report_data = {
+                "report_id": (ev["certificate_number"] or eval_id).replace("/", "_").replace(":", "_").replace(" ", "_"),
+                "instrument": {
+                    "manufacturer": ev["manufacturer"],
+                    "model": ev["model"],
+                    "serial_number": ev["serial_number"],
+                    "accuracy_class": ev["accuracy_class"],
+                    "max_capacity": ev["max_capacity"],
+                    "min_capacity": ev["min_capacity"],
+                    "verification_scale_interval_e": ev["e_interval"]
+                },
+                "test_conditions": {
+                    "inspector_name": ev["inspector_name"] or "Authorized Officer",
+                    "inspector_id": ev["inspector_badge"] or "INS-001"
+                },
+                "generated_at": ev["created_at"],
+                "conformity": ev["conformity"] == 1,
+                "hash": ev["verification_hash"] or "OIML-VERIFIED",
+                "calculations": {
+                    "compliance_score": float(ev["compliance_score"] or 100.0),
+                    "risk_level": ev["risk_level"] or "LOW",
+                    "repeatability": float(ev["repeatability_error"] or 0.0001),
+                    "linearity": float(ev["linearity_error"] or 0.0001),
+                    "hysteresis": float(ev["hysteresis_error"] or 0.0001),
+                    "eccentricity": float(ev["eccentricity_error"] or 0.0001),
+                    "combined_uncertainty": float(ev["combined_uncertainty"] or 0.0001),
+                    "point_results": [
+                        {
+                            "load_kg": float(r["load_val"]),
+                            "reading": float(r["reading"]),
+                            "direction": r["direction"],
+                            "error_kg": float(r["error"]),
+                            "mpe_kg": float(r["mpe"]),
+                            "passed": r["passed"] == 1
+                        }
+                        for r in readings
+                    ]
+                }
+            }
+
+
+            try:
+                # Ensure QR code image is generated first
+                qr_path = REPORTS_DIR / f"qr_{eval_id}.png"
+                proto.generate_qr(report_data, str(qr_path))
+                proto.generate_pdf_report(report_data, str(pdf_path))
+                db.log_audit(user["sub"], "GENERATE_PDF", "REPORT", eval_id, {"pdf": pdf_filename}, self.client_address[0])
+                self.send_json({
                     "success": True,
-                    "pdf_filename": pdf_name,
-                    "html_filename": html_name,
-                    "pdf_url": f"/api/reports/{pdf_name}",
-                    "html_url": f"/api/reports/{html_name}",
-                    "message": "ReportLab PDF and audit records successfully generated"
-                }).encode("utf-8"))
+                    "pdf_url": f"/api/reports/{pdf_filename}",
+                    "report_url": f"/api/reports/{pdf_filename}",
+                    "filename": pdf_filename
+                })
             except Exception as e:
-                self.wfile.write(json.dumps({
-                    "success": False,
-                    "error": str(e)
-                }).encode("utf-8"))
+                self.send_error_json(f"PDF Generation failed: {str(e)}", 500)
+            return
+
+        else:
+            self.send_error(404, "Not Found")
+
+    # =========================================================================
+    # HTTP PUT HANDLER
+    # =========================================================================
+    def do_PUT(self):
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        body = self.parse_json_body()
+
+        if path.startswith("/api/instruments/"):
+            inst_id = path.split("/")[3]
+            user = self.get_auth_user()
+            if not user or user["role"] not in ("ADMIN", "INSPECTOR", "OWNER"):
+                self.send_error_json("Unauthorized", 403)
+                return
+
+            conn = db.get_db()
+            inst = conn.execute("SELECT * FROM instruments WHERE id = ?", (inst_id,)).fetchone()
+            if not inst:
+                conn.close()
+                self.send_error_json("Instrument not found", 404)
+                return
+
+            if user["role"] == "OWNER" and inst["owner_id"] != user["sub"]:
+                conn.close()
+                self.send_error_json("Access denied: Not your instrument", 403)
+                return
+
+            now = datetime.datetime.now().isoformat()
+            model = body.get("model", inst["model"])
+            manufacturer = body.get("manufacturer", inst["manufacturer"])
+            type_approval = body.get("type_approval_no", inst["type_approval_no"])
+            max_capacity = float(body.get("max_capacity", inst["max_capacity"]))
+            min_capacity = float(body.get("min_capacity", inst["min_capacity"]))
+            e_interval = float(body.get("e_interval", inst["e_interval"]))
+            accuracy_class = body.get("accuracy_class", inst["accuracy_class"])
+
+            conn.execute("""
+            UPDATE instruments SET
+                model = ?, manufacturer = ?, type_approval_no = ?, max_capacity = ?,
+                min_capacity = ?, e_interval = ?, accuracy_class = ?, updated_at = ?
+            WHERE id = ?
+            """, (model, manufacturer, type_approval, max_capacity, min_capacity, e_interval, accuracy_class, now, inst_id))
+            conn.commit()
+            conn.close()
+
+            db.log_audit(user["sub"], "UPDATE", "INSTRUMENT", inst_id, {"model": model}, self.client_address[0])
+            self.send_json({"success": True, "message": "Instrument updated successfully"})
+            return
+
+        elif path.startswith("/api/evaluations/"):
+            eval_id = path.split("/")[3]
+            user = self.get_auth_user()
+            if not user or user["role"] not in ("ADMIN", "INSPECTOR"):
+                self.send_error_json("Unauthorized", 403)
+                return
+
+            conn = db.get_db()
+            ev = conn.execute("SELECT * FROM evaluations WHERE id = ?", (eval_id,)).fetchone()
+            if not ev:
+                conn.close()
+                self.send_error_json("Evaluation not found", 404)
+                return
+
+            if ev["status"] in ("APPROVED", "REJECTED"):
+                conn.close()
+                self.send_error_json("Cannot modify finalized evaluation", 400)
+                return
+
+            now = datetime.datetime.now().isoformat()
+            test_location = body.get("test_location", ev["test_location"])
+            temp_c = float(body.get("temperature_c", ev["temperature_c"]))
+            humidity = float(body.get("humidity_percent", ev["humidity_percent"]))
+            pressure = float(body.get("pressure_hpa", ev["pressure_hpa"]))
+
+            conn.execute("""
+            UPDATE evaluations SET
+                test_location = ?, temperature_c = ?, humidity_percent = ?, pressure_hpa = ?, updated_at = ?
+            WHERE id = ?
+            """, (test_location, temp_c, humidity, pressure, now, eval_id))
+            conn.commit()
+            conn.close()
+
+            self.send_json({"success": True, "message": "Evaluation conditions updated"})
+            return
+
+        else:
+            self.send_error(404, "Not Found")
+
+    # =========================================================================
+    # HTTP DELETE HANDLER
+    # =========================================================================
+    def do_DELETE(self):
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+
+        if path.startswith("/api/instruments/"):
+            inst_id = path.split("/")[3]
+            user = self.get_auth_user()
+            if not user or user["role"] not in ("ADMIN", "OWNER"):
+                self.send_error_json("Unauthorized: Requires Admin or Owner role", 403)
+                return
+
+            conn = db.get_db()
+            inst = conn.execute("SELECT * FROM instruments WHERE id = ?", (inst_id,)).fetchone()
+            if not inst:
+                conn.close()
+                self.send_error_json("Instrument not found", 404)
+                return
+
+            if user["role"] == "OWNER" and inst["owner_id"] != user["sub"]:
+                conn.close()
+                self.send_error_json("Access denied: Not your instrument", 403)
+                return
+
+            evals = conn.execute("SELECT id FROM evaluations WHERE instrument_id = ?", (inst_id,)).fetchall()
+            for ev_row in evals:
+                conn.execute("DELETE FROM test_readings WHERE evaluation_id = ?", (ev_row["id"],))
+                conn.execute("DELETE FROM attachments WHERE evaluation_id = ?", (ev_row["id"],))
+            conn.execute("DELETE FROM evaluations WHERE instrument_id = ?", (inst_id,))
+            conn.execute("DELETE FROM instruments WHERE id = ?", (inst_id,))
+            conn.commit()
+            conn.close()
+
+            db.log_audit(user["sub"], "DELETE", "INSTRUMENT", inst_id, {"serial": inst["serial_number"]}, self.client_address[0])
+            self.send_json({"success": True, "message": "Instrument deleted"})
+            return
+
+        elif path.startswith("/api/evaluations/"):
+            eval_id = path.split("/")[3]
+            user = self.get_auth_user()
+            if not user or user["role"] not in ("ADMIN", "INSPECTOR"):
+                self.send_error_json("Unauthorized", 403)
+                return
+
+            conn = db.get_db()
+            ev = conn.execute("SELECT * FROM evaluations WHERE id = ?", (eval_id,)).fetchone()
+            if not ev:
+                conn.close()
+                self.send_error_json("Evaluation not found", 404)
+                return
+
+            if ev["status"] == "APPROVED":
+                conn.close()
+                self.send_error_json("Cannot delete approved evaluation record", 400)
+                return
+
+            conn.execute("DELETE FROM evaluations WHERE id = ?", (eval_id,))
+            conn.commit()
+            conn.close()
+
+            db.log_audit(user["sub"], "DELETE", "EVALUATION", eval_id, {}, self.client_address[0])
+            self.send_json({"success": True, "message": "Evaluation deleted"})
             return
 
         else:
@@ -245,10 +1204,11 @@ class MetrolabApiHandler(BaseHTTPRequestHandler):
 
 def run_server():
     server_address = ("", PORT)
-    httpd = HTTPServer(server_address, MetrolabApiHandler)
+    httpd = HTTPServer(server_address, MetrolabServerHandler)
     print(f"===========================================================")
-    print(f"  Metrolab Web Application running at http://localhost:{PORT}")
-    print(f"  Press Ctrl+C to terminate.")
+    print(f"  Metrolab Enterprise Server (SIH-26035) running on port {PORT}")
+    print(f"  API: http://localhost:{PORT}/api/status")
+    print(f"  Web: http://localhost:{PORT}/")
     print(f"===========================================================")
     try:
         httpd.serve_forever()
