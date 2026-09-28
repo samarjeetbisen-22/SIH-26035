@@ -323,6 +323,28 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
             self.send_json({"evaluations": [dict(r) for r in rows]})
             return
 
+        # 7b. Evaluations History Compatible View (/api/history)
+        elif path == "/api/history":
+            conn = db.get_db()
+            serial = query.get("serial", [""])[0].strip()
+            sql = """
+            SELECT e.id as report_id, e.test_date, e.created_at, e.compliance_score, e.risk_level, e.conformity,
+                   i.model as instrument_model, i.serial_number as instrument_serial, i.accuracy_class as class,
+                   u.full_name as inspector_name
+            FROM evaluations e
+            JOIN instruments i ON e.instrument_id = i.id
+            LEFT JOIN users u ON e.inspector_id = u.id
+            """
+            params = []
+            if serial:
+                sql += " WHERE i.serial_number = ?"
+                params.append(serial)
+            sql += " ORDER BY e.created_at DESC"
+            rows = conn.execute(sql, tuple(params)).fetchall()
+            conn.close()
+            self.send_json({"history": [dict(r) for r in rows]})
+            return
+
         # 8. Evaluation Details: Get One (/api/evaluations/<id>)
         elif path.startswith("/api/evaluations/"):
             eval_id = path.split("/")[3]
@@ -573,26 +595,65 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
             self.send_json({"success": True, "instrument_id": inst_id, "message": "Instrument registered successfully"}, 201)
             return
 
-        # 4. Evaluations CRUD: Create Draft (/api/evaluations)
+        # 4. Evaluations CRUD: Create Evaluation (/api/evaluations)
         elif path == "/api/evaluations":
             user = self.get_auth_user()
             if not user or user["role"] not in ("ADMIN", "INSPECTOR"):
                 self.send_error_json("Only Inspectors and Admins can conduct metrological evaluations", 403)
                 return
 
+            conn = db.get_db()
             instrument_id = body.get("instrument_id")
+
+            # Look up or auto-link instrument
+            if not instrument_id and body.get("serial_number"):
+                row = conn.execute("SELECT id FROM instruments WHERE serial_number = ?", (body.get("serial_number"),)).fetchone()
+                if row:
+                    instrument_id = row["id"]
+
+            if not instrument_id and body.get("instrument"):
+                inst_info = body.get("instrument")
+                sn = inst_info.get("serialNumber") or inst_info.get("serial_number")
+                if sn:
+                    row = conn.execute("SELECT id FROM instruments WHERE serial_number = ?", (sn,)).fetchone()
+                    if row:
+                        instrument_id = row["id"]
+                    else:
+                        instrument_id = f"inst_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(4)}"
+                        now_inst = datetime.datetime.now().isoformat()
+                        conn.execute("""
+                        INSERT INTO instruments (
+                            id, serial_number, model, manufacturer, accuracy_class, max_capacity,
+                            min_capacity, e_interval, d_interval, unit, tare_capacity, type_approval_no,
+                            owner_id, status, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING_VERIFICATION', ?, ?)
+                        """, (
+                            instrument_id, sn,
+                            inst_info.get("model", "NAWI Device"),
+                            inst_info.get("manufacturer", "Manufacturer"),
+                            inst_info.get("accuracyClass", "III"),
+                            float(inst_info.get("maxCapacity", 15.0)),
+                            float(inst_info.get("minCapacity", 0.04)),
+                            float(inst_info.get("verificationScaleIntervalE", 0.005)),
+                            float(inst_info.get("actualScaleIntervalD", 0.005)),
+                            inst_info.get("unit", "kg"),
+                            float(inst_info.get("tareCapacity", 15.0)),
+                            inst_info.get("typeApprovalNumber", ""),
+                            user["sub"], now_inst, now_inst
+                        ))
+
             if not instrument_id:
-                self.send_error_json("Instrument ID required", 400)
+                conn.close()
+                self.send_error_json("Instrument ID or Serial Number required", 400)
                 return
 
-            conn = db.get_db()
             inst = conn.execute("SELECT * FROM instruments WHERE id = ?", (instrument_id,)).fetchone()
             if not inst:
                 conn.close()
                 self.send_error_json("Instrument not found", 404)
                 return
 
-            eval_id = f"eval_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(4)}"
+            eval_id = body.get("id") or body.get("evaluation_id") or f"eval_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(4)}"
             now = datetime.datetime.now().isoformat()
 
             test_date = body.get("test_date", now[:10])
@@ -603,24 +664,67 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
             gravity = float(body.get("gravity_mps2", 9.7915))
             ref_std = body.get("reference_standard", "OIML Class F1 Weights")
             trace_no = body.get("standards_traceability_no", "NPLI/LM/MASS/2026/01")
+            status = body.get("status", "DRAFT")
 
             conn.execute("""
             INSERT INTO evaluations (
                 id, instrument_id, inspector_id, status, test_date, test_location,
                 temperature_c, humidity_percent, pressure_hpa, gravity_mps2,
                 reference_standard, standards_traceability_no, created_at, updated_at
-            ) VALUES (?, ?, ?, 'DRAFT', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                eval_id, instrument_id, user["sub"], test_date, test_location,
+                eval_id, instrument_id, user["sub"], status, test_date, test_location,
                 temp_c, humidity, pressure, gravity, ref_std, trace_no, now, now
             ))
+
+            # Store readings if provided
+            readings_list = body.get("readings", [])
+            if readings_list and isinstance(readings_list, list):
+                inst_dict = {
+                    "max_capacity": inst["max_capacity"],
+                    "e_interval": inst["e_interval"],
+                    "accuracy_class": inst["accuracy_class"],
+                    "serial_number": inst["serial_number"],
+                    "model": inst["model"]
+                }
+                results = backend_oiml.validate_oiml_compliance(inst_dict, readings_list)
+                for pt in results["point_results"]:
+                    rd_id = f"tr_{secrets.token_hex(6)}"
+                    test_type = pt.get("test_type", "LOAD")
+                    if test_type not in ("LOAD", "ECCENTRICITY", "REPEATABILITY"):
+                        test_type = "LOAD"
+                    pos = pt.get("position", "center")
+                    if pos not in ('center', 'front-left', 'front-right', 'back-left', 'back-right'):
+                        pos = 'center'
+                    conn.execute("""
+                    INSERT INTO test_readings (
+                        id, evaluation_id, test_type, load_val, reading, error, mpe, ratio, passed,
+                        direction, position, repeat_number, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        rd_id, eval_id, test_type, pt["load"], pt["reading"], pt["error"],
+                        pt["mpe"], pt["ratio"], 1 if pt["passed"] else 0,
+                        pt["direction"], pos, pt["repeat_number"], now
+                    ))
+                conn.execute("""
+                UPDATE evaluations SET
+                    repeatability_error = ?, linearity_error = ?, hysteresis_error = ?,
+                    eccentricity_error = ?, combined_uncertainty = ?, expanded_uncertainty = ?,
+                    compliance_score = ?, risk_level = ?, conformity = ?, verification_hash = ?
+                WHERE id = ?
+                """, (
+                    results["repeatability_error"], results["linearity_error"], results["hysteresis_error"],
+                    results["eccentricity_error"], results["combined_uncertainty"], results["expanded_uncertainty"],
+                    results["compliance_score"], results["risk_level"], results["conformity"], results["verification_hash"],
+                    eval_id
+                ))
 
             conn.execute("UPDATE instruments SET status = 'PENDING_VERIFICATION', updated_at = ? WHERE id = ?", (now, instrument_id))
             conn.commit()
             conn.close()
 
-            db.log_audit(user["sub"], "CREATE", "EVALUATION", eval_id, {"instrument": inst["serial_number"]}, self.client_address[0])
-            self.send_json({"success": True, "evaluation_id": eval_id, "message": "Draft evaluation created"}, 201)
+            db.log_audit(user["sub"], "CREATE", "EVALUATION", eval_id, {"instrument": inst["serial_number"], "status": status}, self.client_address[0])
+            self.send_json({"success": True, "evaluation_id": eval_id, "message": "Evaluation created successfully", "status": status}, 201)
             return
 
         # 5. Real Test Readings Storage & Server-side Recalculation
@@ -1042,6 +1146,88 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
                 self.send_error_json(f"PDF Generation failed: {str(e)}", 500)
             return
 
+        # 10. Direct Save to DB Bridge (/api/save_audit)
+        elif path == "/api/save_audit":
+            user = self.get_auth_user()
+            inspector_id = user["sub"] if user else "usr_inspector_01"
+            report_id = body.get("report_id") or f"eval_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(4)}"
+            inst_data = body.get("instrument", {})
+            cond_data = body.get("test_conditions", {})
+            calcs = body.get("calculations", {})
+
+            conn = db.get_db()
+            serial = inst_data.get("serialNumber") or inst_data.get("serial_number")
+            inst_row = None
+            if serial:
+                inst_row = conn.execute("SELECT id FROM instruments WHERE serial_number = ?", (serial,)).fetchone()
+            
+            if inst_row:
+                inst_id = inst_row["id"]
+            else:
+                inst_id = f"inst_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(4)}"
+                now_str = datetime.datetime.now().isoformat()
+                conn.execute("""
+                INSERT INTO instruments (
+                    id, serial_number, model, manufacturer, accuracy_class, max_capacity,
+                    min_capacity, e_interval, d_interval, unit, tare_capacity, type_approval_no,
+                    owner_id, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING_VERIFICATION', ?, ?)
+                """, (
+                    inst_id, serial or f"SN-{secrets.token_hex(4)}",
+                    inst_data.get("model", "Bench Scale"),
+                    inst_data.get("manufacturer", "Manufacturer"),
+                    inst_data.get("accuracyClass", "III"),
+                    float(inst_data.get("maxCapacity", 15.0)),
+                    float(inst_data.get("minCapacity", 0.04)),
+                    float(inst_data.get("verificationScaleIntervalE", 0.005)),
+                    float(inst_data.get("actualScaleIntervalD", 0.005)),
+                    inst_data.get("unit", "kg"),
+                    float(inst_data.get("tareCapacity", 15.0)),
+                    inst_data.get("typeApprovalNumber", ""),
+                    inspector_id, now_str, now_str
+                ))
+
+            now = datetime.datetime.now().isoformat()
+            existing_ev = conn.execute("SELECT id FROM evaluations WHERE id = ?", (report_id,)).fetchone()
+            if existing_ev:
+                conn.execute("""
+                UPDATE evaluations SET
+                    instrument_id = ?, test_location = ?, temperature_c = ?, humidity_percent = ?,
+                    pressure_hpa = ?, gravity_mps2 = ?, combined_uncertainty = ?, compliance_score = ?,
+                    risk_level = ?, conformity = ?, verification_hash = ?, updated_at = ?
+                WHERE id = ?
+                """, (
+                    inst_id, cond_data.get("location", "Regional Reference Standards Laboratory"),
+                    float(cond_data.get("temperature", 25.0)), float(cond_data.get("humidity", 55.0)),
+                    float(cond_data.get("pressure", 1013.25)), float(cond_data.get("gravity", 9.7915)),
+                    float(calcs.get("combined_uncertainty", 0.0)), float(calcs.get("compliance_score", 100.0)),
+                    calcs.get("risk_level", "LOW"), 1 if body.get("conformity") else 0,
+                    calcs.get("verification_hash", ""), now, report_id
+                ))
+            else:
+                conn.execute("""
+                INSERT INTO evaluations (
+                    id, instrument_id, inspector_id, status, test_date, test_location,
+                    temperature_c, humidity_percent, pressure_hpa, gravity_mps2,
+                    combined_uncertainty, compliance_score, risk_level, conformity,
+                    verification_hash, created_at, updated_at
+                ) VALUES (?, ?, ?, 'DRAFT', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    report_id, inst_id, inspector_id, now[:10],
+                    cond_data.get("location", "Regional Reference Standards Laboratory"),
+                    float(cond_data.get("temperature", 25.0)), float(cond_data.get("humidity", 55.0)),
+                    float(cond_data.get("pressure", 1013.25)), float(cond_data.get("gravity", 9.7915)),
+                    float(calcs.get("combined_uncertainty", 0.0)), float(calcs.get("compliance_score", 100.0)),
+                    calcs.get("risk_level", "LOW"), 1 if body.get("conformity") else 0,
+                    calcs.get("verification_hash", ""), now, now
+                ))
+
+            conn.commit()
+            conn.close()
+            db.log_audit(inspector_id, "SAVE_AUDIT", "EVALUATION", report_id, {}, self.client_address[0])
+            self.send_json({"success": True, "evaluation_id": report_id, "message": "Saved evaluation permanently to database"})
+            return
+
         else:
             self.send_error(404, "Not Found")
 
@@ -1114,20 +1300,87 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
                 return
 
             now = datetime.datetime.now().isoformat()
+            
+            # Check instrument relationship - cannot disconnect or set invalid instrument
+            target_inst_id = body.get("instrument_id")
+            if target_inst_id and target_inst_id != ev["instrument_id"]:
+                inst_check = conn.execute("SELECT id FROM instruments WHERE id = ?", (target_inst_id,)).fetchone()
+                if not inst_check:
+                    conn.close()
+                    self.send_error_json("Target instrument does not exist. Evaluation cannot be disconnected from a valid instrument.", 400)
+                    return
+                instrument_id = target_inst_id
+            else:
+                instrument_id = ev["instrument_id"]
+
+            test_date = body.get("test_date", ev["test_date"])
             test_location = body.get("test_location", ev["test_location"])
             temp_c = float(body.get("temperature_c", ev["temperature_c"]))
             humidity = float(body.get("humidity_percent", ev["humidity_percent"]))
             pressure = float(body.get("pressure_hpa", ev["pressure_hpa"]))
+            gravity = float(body.get("gravity_mps2", ev["gravity_mps2"]))
+            ref_std = body.get("reference_standard", ev["reference_standard"])
+            trace_no = body.get("standards_traceability_no", ev["standards_traceability_no"])
+            status = body.get("status", ev["status"])
 
             conn.execute("""
             UPDATE evaluations SET
-                test_location = ?, temperature_c = ?, humidity_percent = ?, pressure_hpa = ?, updated_at = ?
+                instrument_id = ?, test_date = ?, test_location = ?, temperature_c = ?,
+                humidity_percent = ?, pressure_hpa = ?, gravity_mps2 = ?,
+                reference_standard = ?, standards_traceability_no = ?, status = ?,
+                updated_at = ?
             WHERE id = ?
-            """, (test_location, temp_c, humidity, pressure, now, eval_id))
+            """, (instrument_id, test_date, test_location, temp_c, humidity, pressure, gravity, ref_std, trace_no, status, now, eval_id))
+
+            # Store updated readings if provided
+            readings_list = body.get("readings")
+            if readings_list is not None and isinstance(readings_list, list):
+                inst = conn.execute("SELECT * FROM instruments WHERE id = ?", (instrument_id,)).fetchone()
+                inst_dict = {
+                    "max_capacity": inst["max_capacity"],
+                    "e_interval": inst["e_interval"],
+                    "accuracy_class": inst["accuracy_class"],
+                    "serial_number": inst["serial_number"],
+                    "model": inst["model"]
+                }
+                results = backend_oiml.validate_oiml_compliance(inst_dict, readings_list)
+                conn.execute("DELETE FROM test_readings WHERE evaluation_id = ?", (eval_id,))
+                for pt in results["point_results"]:
+                    rd_id = f"tr_{secrets.token_hex(6)}"
+                    test_type = pt.get("test_type", "LOAD")
+                    if test_type not in ("LOAD", "ECCENTRICITY", "REPEATABILITY"):
+                        test_type = "LOAD"
+                    pos = pt.get("position", "center")
+                    if pos not in ('center', 'front-left', 'front-right', 'back-left', 'back-right'):
+                        pos = 'center'
+                    conn.execute("""
+                    INSERT INTO test_readings (
+                        id, evaluation_id, test_type, load_val, reading, error, mpe, ratio, passed,
+                        direction, position, repeat_number, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        rd_id, eval_id, test_type, pt["load"], pt["reading"], pt["error"],
+                        pt["mpe"], pt["ratio"], 1 if pt["passed"] else 0,
+                        pt["direction"], pos, pt["repeat_number"], now
+                    ))
+                conn.execute("""
+                UPDATE evaluations SET
+                    repeatability_error = ?, linearity_error = ?, hysteresis_error = ?,
+                    eccentricity_error = ?, combined_uncertainty = ?, expanded_uncertainty = ?,
+                    compliance_score = ?, risk_level = ?, conformity = ?, verification_hash = ?
+                WHERE id = ?
+                """, (
+                    results["repeatability_error"], results["linearity_error"], results["hysteresis_error"],
+                    results["eccentricity_error"], results["combined_uncertainty"], results["expanded_uncertainty"],
+                    results["compliance_score"], results["risk_level"], results["conformity"], results["verification_hash"],
+                    eval_id
+                ))
+
             conn.commit()
             conn.close()
 
-            self.send_json({"success": True, "message": "Evaluation conditions updated"})
+            db.log_audit(user["sub"], "UPDATE", "EVALUATION", eval_id, {"status": status}, self.client_address[0])
+            self.send_json({"success": True, "message": "Evaluation updated permanently", "evaluation_id": eval_id, "status": status})
             return
 
         else:

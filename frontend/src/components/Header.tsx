@@ -29,6 +29,9 @@ interface HeaderProps {
   backendOnline: boolean;
   onOpenAuditHistory: () => void;
   onOpenAttachments?: () => void;
+  evaluationId?: string | null;
+  evaluationStatus?: string;
+  onNewEvaluation?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -44,6 +47,9 @@ export const Header: React.FC<HeaderProps> = ({
   backendOnline,
   onOpenAuditHistory,
   onOpenAttachments,
+  evaluationId,
+  evaluationStatus,
+  onNewEvaluation,
 }) => {
   const [presetDropdownOpen, setPresetDropdownOpen] = React.useState(false);
 
@@ -152,6 +158,25 @@ export const Header: React.FC<HeaderProps> = ({
               <span>Score: {computation.complianceScore}%</span>
             </div>
 
+            {/* Active Evaluation ID & Workflow Status */}
+            {evaluationId ? (
+              <div className="flex items-center space-x-1.5 px-2.5 py-1 rounded text-xs font-mono font-medium bg-blue-50 border border-blue-200 text-blue-800">
+                <span className="text-slate-500 font-normal">Eval:</span>
+                <span className="font-bold">{evaluationId.length > 15 ? evaluationId.slice(0, 15) + "…" : evaluationId}</span>
+                <span className={`text-[10px] px-1 py-0.5 rounded uppercase font-semibold ${
+                  evaluationStatus === 'APPROVED' ? 'bg-emerald-100 text-emerald-800' :
+                  evaluationStatus === 'SUBMITTED' ? 'bg-amber-100 text-amber-800' :
+                  'bg-white border border-blue-200 text-blue-700'
+                }`}>
+                  {evaluationStatus || 'DRAFT'}
+                </span>
+              </div>
+            ) : (
+              <div className="flex items-center space-x-1 px-2 py-1 rounded text-xs font-mono text-slate-500 bg-slate-50 border border-slate-200">
+                <span>Unsaved Draft</span>
+              </div>
+            )}
+
             {/* Backend Integration Status Indicator */}
             <div
               className={`flex items-center space-x-1.5 px-2.5 py-1 rounded text-[11px] font-mono border ${
@@ -171,6 +196,15 @@ export const Header: React.FC<HeaderProps> = ({
 
           {/* Quick Actions (Print, Export, Reset, Audit DB) */}
           <div className="flex items-center space-x-2">
+            {onNewEvaluation && (
+              <button
+                onClick={onNewEvaluation}
+                title="Start a new clean evaluation"
+                className="flex items-center space-x-1 px-2.5 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded hover:bg-blue-100 transition-colors shadow-subtle"
+              >
+                <span>+ New Eval</span>
+              </button>
+            )}
             <button
               onClick={onOpenAuditHistory}
               title="Open SQLite Audit Trail (nawi_audit.db)"

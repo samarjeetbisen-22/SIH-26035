@@ -105,7 +105,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
         onLoginSuccess(res.user);
       } else {
         setErrorMessage(
-          res.error || "Authentication failed. Invalid username or password."
+          res.error || "Authentication failed. Invalid username or password.",
         );
       }
     } catch (err: any) {
@@ -141,7 +141,8 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
               {PRESET_ROLES.map((preset) => {
                 const Icon = preset.icon;
                 const isSelected =
-                  username === preset.username && selectedRole.role === preset.role;
+                  username === preset.username &&
+                  selectedRole.role === preset.role;
                 return (
                   <button
                     key={preset.role}

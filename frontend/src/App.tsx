@@ -22,6 +22,11 @@ import {
   loginUser,
   validateSession,
   fetchDashboardStats,
+  fetchEvaluationDetails,
+  createEvaluation,
+  updateEvaluation,
+  deleteEvaluation,
+  fetchEvaluations,
   UserSession,
 } from "./utils/apiClient";
 import { LoginPage } from "./components/LoginPage";
@@ -60,6 +65,12 @@ export function App() {
     getAuthUser(),
   );
 
+  // Evaluation CRUD State
+  const [currentEvaluationId, setCurrentEvaluationId] = useState<string | null>(
+    () => localStorage.getItem("metrolab_current_eval_id"),
+  );
+  const [evaluationStatus, setEvaluationStatus] = useState<string>("DRAFT");
+
   // Backend Integration & Modals State
   const [backendOnline, setBackendOnline] = useState<boolean>(false);
   const [isSavingAudit, setIsSavingAudit] = useState<boolean>(false);
@@ -91,6 +102,68 @@ export function App() {
     }
   };
 
+  // Load evaluation by ID from backend SQLite database
+  const loadEvaluation = async (evalId: string) => {
+    try {
+      const data = await fetchEvaluationDetails(evalId);
+      if (data && data.evaluation) {
+        const ev = data.evaluation;
+        setCurrentEvaluationId(ev.id);
+        setEvaluationStatus(ev.status || "DRAFT");
+        localStorage.setItem("metrolab_current_eval_id", ev.id);
+
+        // Keep instrument linked properly
+        setInstrument({
+          manufacturer: ev.manufacturer || DEFAULT_INSTRUMENT.manufacturer,
+          model: ev.model || DEFAULT_INSTRUMENT.model,
+          serialNumber: ev.serial_number || DEFAULT_INSTRUMENT.serialNumber,
+          accuracyClass: (ev.accuracy_class as any) || DEFAULT_INSTRUMENT.accuracyClass,
+          maxCapacity: Number(ev.max_capacity) || DEFAULT_INSTRUMENT.maxCapacity,
+          minCapacity: Number(ev.min_capacity) || DEFAULT_INSTRUMENT.minCapacity,
+          verificationScaleIntervalE: Number(ev.e_interval) || DEFAULT_INSTRUMENT.verificationScaleIntervalE,
+          actualScaleIntervalD: Number(ev.d_interval) || DEFAULT_INSTRUMENT.actualScaleIntervalD,
+          tareCapacity: Number(ev.tare_capacity) || DEFAULT_INSTRUMENT.tareCapacity,
+          unit: ev.unit || DEFAULT_INSTRUMENT.unit,
+          typeApprovalNo: ev.type_approval_no || DEFAULT_INSTRUMENT.typeApprovalNo,
+          yearOfManufacture: ev.year_of_manufacture || DEFAULT_INSTRUMENT.yearOfManufacture,
+          countryOfOrigin: ev.country_of_origin || DEFAULT_INSTRUMENT.countryOfOrigin,
+        });
+
+        // Restore Test Conditions
+        setConditions((prev) => ({
+          ...prev,
+          testLocation: ev.test_location || prev.testLocation,
+          temperatureC: Number(ev.temperature_c) || prev.temperatureC,
+          humidityPercent: Number(ev.humidity_percent) || prev.humidityPercent,
+          barometricPressureHpa: Number(ev.pressure_hpa) || prev.barometricPressureHpa,
+          gravityMps2: Number(ev.gravity_mps2) || prev.gravityMps2,
+          referenceMassStandard: ev.reference_standard || prev.referenceMassStandard,
+          standardsTraceabilityNo: ev.standards_traceability_no || prev.standardsTraceabilityNo,
+          testDate: ev.test_date || prev.testDate,
+        }));
+
+        // Restore Readings
+        if (data.readings && data.readings.length > 0) {
+          const mapped: ReadingItem[] = data.readings.map((r: any, idx: number) => ({
+            id: r.id || `rd_${idx + 1}`,
+            load: Number(r.load_val),
+            reading: Number(r.reading),
+            direction: (r.direction as any) || "increasing",
+            position: (r.position as any) || "center",
+            repeatNumber: Number(r.repeat_number) || 1,
+          }));
+          setReadings(mapped);
+        }
+
+        showToast(`Loaded evaluation ${ev.id} (${ev.status})`);
+        return true;
+      }
+    } catch (e) {
+      console.error("Failed to load evaluation", e);
+    }
+    return false;
+  };
+
   useEffect(() => {
     checkBackend();
     const interval = setInterval(checkBackend, 10000);
@@ -113,17 +186,38 @@ export function App() {
     };
   }, []);
 
+  // Restore saved evaluation from SQLite database on mount / refresh
+  useEffect(() => {
+    if (backendOnline && currentEvaluationId) {
+      loadEvaluation(currentEvaluationId);
+    }
+  }, [backendOnline]);
+
   // Live Metrological Calculations Engine
   const computation = useMemo(() => {
     return computeMetrology(instrument, readings);
   }, [instrument, readings]);
 
-  const reportId = `REP-${instrument.accuracyClass}-${instrument.serialNumber.replace(/[^A-Za-z0-9]/g, "").slice(-6)}-2026`;
+  const reportId = currentEvaluationId || `REP-${instrument.accuracyClass}-${instrument.serialNumber.replace(/[^A-Za-z0-9]/g, "").slice(-6)}-2026`;
+
+  // Start Clean New Evaluation
+  const handleNewEvaluation = () => {
+    setCurrentEvaluationId(null);
+    setEvaluationStatus("DRAFT");
+    localStorage.removeItem("metrolab_current_eval_id");
+    setInstrument(DEFAULT_INSTRUMENT);
+    setConditions(DEFAULT_CONDITIONS);
+    setReadings(DEFAULT_READINGS);
+    showToast("Started new evaluation draft for laboratory testing");
+  };
 
   // Preset Selector
   const handleSelectPreset = (presetId: string) => {
     const found = PRESET_PROFILES.find((p) => p.id === presetId);
     if (found) {
+      setCurrentEvaluationId(null);
+      setEvaluationStatus("DRAFT");
+      localStorage.removeItem("metrolab_current_eval_id");
       setInstrument(found.instrument);
       setConditions(found.conditions);
       setReadings(found.readings);
@@ -133,6 +227,9 @@ export function App() {
 
   // Reset to Baseline
   const handleReset = () => {
+    setCurrentEvaluationId(null);
+    setEvaluationStatus("DRAFT");
+    localStorage.removeItem("metrolab_current_eval_id");
     setInstrument(DEFAULT_INSTRUMENT);
     setConditions(DEFAULT_CONDITIONS);
     setReadings(DEFAULT_READINGS);
@@ -144,21 +241,65 @@ export function App() {
     window.print();
   };
 
-  // Backend: Save to SQLite nawi_audit.db
+  // Backend: Save to SQLite nawi_audit.db (CREATE or UPDATE evaluation permanently)
   const handleSaveToAuditDb = async () => {
     setIsSavingAudit(true);
     try {
-      const res = await saveAuditToBackend(
-        reportId,
-        instrument,
-        conditions,
-        computation,
-      );
-      if (res.success) {
-        showToast("Successfully logged verification audit to nawi_audit.db");
-        checkBackend();
+      const formattedReadings = readings.map((r) => ({
+        load: r.load,
+        reading: r.reading,
+        direction: r.direction || "increasing",
+        position: r.position || "center",
+        repeat_number: r.repeatNumber || 1,
+      }));
+
+      if (currentEvaluationId) {
+        // UPDATE existing evaluation permanently
+        const res = await updateEvaluation(currentEvaluationId, {
+          test_date: conditions.testDate || new Date().toISOString().slice(0, 10),
+          test_location: conditions.testLocation,
+          temperature_c: conditions.temperatureC,
+          humidity_percent: conditions.humidityPercent,
+          pressure_hpa: conditions.barometricPressureHpa,
+          gravity_mps2: conditions.gravityMps2,
+          reference_standard: conditions.referenceMassStandard,
+          standards_traceability_no: conditions.standardsTraceabilityNo,
+          status: evaluationStatus,
+          readings: formattedReadings,
+        });
+
+        if (res.success) {
+          showToast(`Saved changes permanently to evaluation ${currentEvaluationId}`);
+          checkBackend();
+        } else {
+          showToast("Update failed: " + (res.error || res.message || "Error"));
+        }
       } else {
-        showToast("Could not save to DB: " + (res.message || "Error"));
+        // CREATE new evaluation permanently
+        const res = await createEvaluation({
+          instrument,
+          serial_number: instrument.serialNumber,
+          test_date: conditions.testDate || new Date().toISOString().slice(0, 10),
+          test_location: conditions.testLocation,
+          temperature_c: conditions.temperatureC,
+          humidity_percent: conditions.humidityPercent,
+          pressure_hpa: conditions.barometricPressureHpa,
+          gravity_mps2: conditions.gravityMps2,
+          reference_standard: conditions.referenceMassStandard,
+          standards_traceability_no: conditions.standardsTraceabilityNo,
+          status: "DRAFT",
+          readings: formattedReadings,
+        });
+
+        if (res.success && res.evaluation_id) {
+          setCurrentEvaluationId(res.evaluation_id);
+          setEvaluationStatus(res.status || "DRAFT");
+          localStorage.setItem("metrolab_current_eval_id", res.evaluation_id);
+          showToast(`Created & permanently saved evaluation ${res.evaluation_id}`);
+          checkBackend();
+        } else {
+          showToast("Create failed: " + (res.error || res.message || "Error"));
+        }
       }
     } finally {
       setIsSavingAudit(false);
@@ -286,6 +427,9 @@ export function App() {
         backendOnline={backendOnline}
         onOpenAuditHistory={handleOpenAuditHistory}
         onOpenAttachments={() => setIsAttachmentModalOpen(true)}
+        evaluationId={currentEvaluationId}
+        evaluationStatus={evaluationStatus}
+        onNewEvaluation={handleNewEvaluation}
       />
 
       {/* Real Role Switcher & User Session Header */}
@@ -461,6 +605,10 @@ export function App() {
         isOpen={isReviewerModalOpen}
         onClose={() => setIsReviewerModalOpen(false)}
         onNotification={showToast}
+        onSelectEvaluation={(evalId) => {
+          loadEvaluation(evalId);
+          setIsReviewerModalOpen(false);
+        }}
       />
 
       {/* Owner Fleet Portal Modal */}
@@ -475,7 +623,7 @@ export function App() {
       <AttachmentUploadModal
         isOpen={isAttachmentModalOpen}
         onClose={() => setIsAttachmentModalOpen(false)}
-        evaluationId="eval_seed_001"
+        evaluationId={currentEvaluationId || "eval_demo_01"}
         onNotification={showToast}
       />
 
@@ -486,6 +634,10 @@ export function App() {
         records={auditRecords}
         isLoading={isLoadingAudit}
         onRefresh={handleOpenAuditHistory}
+        onSelectEvaluation={(evalId) => {
+          loadEvaluation(evalId);
+          setIsAuditModalOpen(false);
+        }}
       />
 
       {/* Official Lab Footer */}

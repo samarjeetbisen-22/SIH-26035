@@ -218,6 +218,36 @@ export async function submitForReview(evalId: string) {
   }
 }
 
+export async function updateEvaluation(evalId: string, payload: any) {
+  const token = getAuthToken();
+  try {
+    const res = await fetch(`${API_BASE}/evaluations/${evalId}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {})
+      },
+      body: JSON.stringify(payload)
+    });
+    return await res.json();
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+}
+
+export async function deleteEvaluation(evalId: string) {
+  const token = getAuthToken();
+  try {
+    const res = await fetch(`${API_BASE}/evaluations/${evalId}`, {
+      method: 'DELETE',
+      headers: token ? { Authorization: `Bearer ${token}` } : {}
+    });
+    return await res.json();
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+}
+
 export async function reviewEvaluation(evalId: string, verdict: 'APPROVE' | 'REJECT', comments: string) {
   const token = getAuthToken();
   try {

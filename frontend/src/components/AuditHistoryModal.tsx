@@ -16,6 +16,7 @@ interface AuditHistoryModalProps {
   records: AuditHistoryRecord[];
   isLoading: boolean;
   onRefresh: () => void;
+  onSelectEvaluation?: (evalId: string) => void;
 }
 
 export const AuditHistoryModal: React.FC<AuditHistoryModalProps> = ({
@@ -24,6 +25,7 @@ export const AuditHistoryModal: React.FC<AuditHistoryModalProps> = ({
   records,
   isLoading,
   onRefresh,
+  onSelectEvaluation,
 }) => {
   if (!isOpen) return null;
 
@@ -93,6 +95,7 @@ export const AuditHistoryModal: React.FC<AuditHistoryModalProps> = ({
                     <th className="py-2.5 px-3">Risk Level</th>
                     <th className="py-2.5 px-3">Verdict</th>
                     <th className="py-2.5 px-3">Inspector</th>
+                    {onSelectEvaluation && <th className="py-2.5 px-3 text-right">Action</th>}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#E2E8F0] text-slate-800">
@@ -155,6 +158,16 @@ export const AuditHistoryModal: React.FC<AuditHistoryModalProps> = ({
                       <td className="py-2.5 px-3 font-sans text-slate-600 truncate max-w-[120px]">
                         {r.inspector_name || "—"}
                       </td>
+                      {onSelectEvaluation && (
+                        <td className="py-2.5 px-3 text-right font-sans">
+                          <button
+                            onClick={() => onSelectEvaluation(r.report_id)}
+                            className="px-2 py-0.5 text-[11px] font-medium text-blue-600 bg-blue-50 border border-blue-200 rounded hover:bg-blue-100 transition-colors"
+                          >
+                            Open
+                          </button>
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>

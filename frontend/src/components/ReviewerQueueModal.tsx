@@ -19,12 +19,14 @@ interface ReviewerQueueModalProps {
   isOpen: boolean;
   onClose: () => void;
   onNotification: (msg: string) => void;
+  onSelectEvaluation?: (evalId: string) => void;
 }
 
 export const ReviewerQueueModal: React.FC<ReviewerQueueModalProps> = ({
   isOpen,
   onClose,
   onNotification,
+  onSelectEvaluation,
 }) => {
   const [evaluations, setEvaluations] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
@@ -288,14 +290,25 @@ export const ReviewerQueueModal: React.FC<ReviewerQueueModalProps> = ({
 
                 {/* Action Buttons */}
                 <div className="flex items-center justify-between pt-4 border-t border-[#E2E8F0]">
-                  <button
-                    onClick={() => handleDownloadPdf(selectedEval.id)}
-                    disabled={actionLoading}
-                    className="flex items-center space-x-1.5 px-3 py-2 text-xs font-medium text-slate-700 bg-white border border-[#E2E8F0] rounded hover:bg-slate-50 shadow-sm transition-colors"
-                  >
-                    <Download className="w-4 h-4 text-blue-600" />
-                    <span>Generate Official PDF</span>
-                  </button>
+                  <div className="flex items-center space-x-2">
+                    <button
+                      onClick={() => handleDownloadPdf(selectedEval.id)}
+                      disabled={actionLoading}
+                      className="flex items-center space-x-1.5 px-3 py-2 text-xs font-medium text-slate-700 bg-white border border-[#E2E8F0] rounded hover:bg-slate-50 shadow-sm transition-colors"
+                    >
+                      <Download className="w-4 h-4 text-blue-600" />
+                      <span>Generate Official PDF</span>
+                    </button>
+                    {onSelectEvaluation && (
+                      <button
+                        onClick={() => onSelectEvaluation(selectedEval.id)}
+                        className="flex items-center space-x-1.5 px-3 py-2 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded hover:bg-blue-100 shadow-sm transition-colors"
+                      >
+                        <FileText className="w-4 h-4 text-blue-600" />
+                        <span>Open in Workspace</span>
+                      </button>
+                    )}
+                  </div>
 
                   <div className="flex items-center space-x-2">
                     <button
