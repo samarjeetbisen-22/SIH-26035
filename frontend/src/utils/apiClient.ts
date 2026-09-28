@@ -76,6 +76,32 @@ export async function logoutUser() {
   setAuthUser(null);
 }
 
+export async function validateSession(): Promise<UserSession | null> {
+  const token = getAuthToken();
+  if (!token) {
+    setAuthUser(null);
+    return null;
+  }
+  try {
+    const res = await fetch(`${API_BASE}/auth/me`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.user) {
+        setAuthUser(data.user);
+        return data.user;
+      }
+    }
+  } catch (err) {
+    console.error("Session verification error:", err);
+  }
+  // Token expired or invalid
+  setAuthToken(null);
+  setAuthUser(null);
+  return null;
+}
+
 export async function checkBackendStatus() {
   try {
     const res = await fetch(`${API_BASE}/status`, { signal: AbortSignal.timeout(2500) });

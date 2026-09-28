@@ -20,9 +20,11 @@ import {
   getAuthUser,
   setAuthUser,
   loginUser,
+  validateSession,
   fetchDashboardStats,
   UserSession,
 } from "./utils/apiClient";
+import { LoginPage } from "./components/LoginPage";
 import { Header } from "./components/Header";
 import { AuthRoleSwitcher } from "./components/AuthRoleSwitcher";
 import { InstrumentIntakeForm } from "./components/InstrumentIntakeForm";
@@ -93,16 +95,22 @@ export function App() {
     checkBackend();
     const interval = setInterval(checkBackend, 10000);
 
-    // If not authenticated yet, default login as Inspector
-    if (!currentUser) {
-      loginUser("rajesh_inspector", "Inspector@123").then((res) => {
-        if (res.success && res.user) {
-          setCurrentUser(res.user);
-        }
-      });
-    }
+    // Verify existing token against backend /api/auth/me
+    validateSession().then((user) => {
+      setCurrentUser(user);
+    });
 
-    return () => clearInterval(interval);
+    const handleAuthExpired = () => {
+      setCurrentUser(null);
+      showToast("Session expired or invalid. Please sign in again.");
+    };
+
+    window.addEventListener("metrolab_auth_expired", handleAuthExpired);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("metrolab_auth_expired", handleAuthExpired);
+    };
   }, []);
 
   // Live Metrological Calculations Engine
@@ -241,6 +249,18 @@ export function App() {
     document.body.removeChild(link);
     showToast("Exported readings ledger as CSV");
   };
+
+  // Guard against unauthenticated access to protected application pages
+  if (!currentUser) {
+    return (
+      <LoginPage
+        onLoginSuccess={(user) => {
+          setCurrentUser(user);
+          showToast(`Welcome back, ${user.full_name} (${user.role})`);
+        }}
+      />
+    );
+  }
 
   return (
     <div className="min-h-screen bg-[#F8FAFC] text-[#0F172A] font-sans flex flex-col antialiased selection:bg-blue-100 selection:text-blue-900">

@@ -30,7 +30,7 @@ export const AuthRoleSwitcher: React.FC<AuthRoleSwitcherProps> = ({
   const presetRoles = [
     {
       role: "INSPECTOR",
-      label: "Inspector",
+      label: "Technician",
       name: "Rajesh Kumar",
       org: "RRSL Metrology Dept",
       username: "rajesh_inspector",
@@ -50,7 +50,7 @@ export const AuthRoleSwitcher: React.FC<AuthRoleSwitcherProps> = ({
     },
     {
       role: "OWNER",
-      label: "Owner",
+      label: "Instrument Owner",
       name: "Essae Digitronics",
       org: "Essae Fleet Portal",
       username: "essae_owner",

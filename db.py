@@ -282,6 +282,36 @@ def seed_database():
             "role": "OWNER",
             "organization": "Avery Weigh-Tronix India Ltd.",
             "badge_id": "MFR-IND-0881"
+        },
+        {
+            "id": "usr_technician_alias",
+            "username": "technician",
+            "email": "technician@metrolab.gov.in",
+            "password": "Technician@123",
+            "full_name": "Rajesh Kumar (Technician)",
+            "role": "INSPECTOR",
+            "organization": "Regional Reference Standards Laboratory (RRSL)",
+            "badge_id": "TECH-DL-2024-0087"
+        },
+        {
+            "id": "usr_reviewer_alias",
+            "username": "reviewer",
+            "email": "reviewer@metrolab.gov.in",
+            "password": "Reviewer@123",
+            "full_name": "Dr. Priya Verma (Reviewer)",
+            "role": "REVIEWER",
+            "organization": "Central Verification & Review Board",
+            "badge_id": "REV-DL-2021-0023"
+        },
+        {
+            "id": "usr_owner_alias",
+            "username": "owner",
+            "email": "owner@metrolab.gov.in",
+            "password": "Owner@123",
+            "full_name": "Essae Digitronics (Instrument Owner)",
+            "role": "OWNER",
+            "organization": "Essae Teraoka Pvt. Ltd.",
+            "badge_id": "MFR-IND-0471"
         }
     ]
 
