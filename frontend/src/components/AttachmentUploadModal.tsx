@@ -63,7 +63,9 @@ export const AttachmentUploadModal: React.FC<AttachmentUploadModalProps> = ({
 
   const handleUpload = async () => {
     if (!evaluationId) {
-      alert("Please create or select an evaluation before uploading attachments.");
+      alert(
+        "Please create or select an evaluation before uploading attachments.",
+      );
       return;
     }
 
@@ -83,21 +85,50 @@ export const AttachmentUploadModal: React.FC<AttachmentUploadModalProps> = ({
     }
 
     const dangerousExts = [
-      ".exe", ".bat", ".cmd", ".sh", ".ps1", ".vbs", ".js", ".py", ".php",
-      ".pl", ".dll", ".scr", ".msi", ".jar", ".com", ".hta", ".bin", ".iso", ".wsf"
+      ".exe",
+      ".bat",
+      ".cmd",
+      ".sh",
+      ".ps1",
+      ".vbs",
+      ".js",
+      ".py",
+      ".php",
+      ".pl",
+      ".dll",
+      ".scr",
+      ".msi",
+      ".jar",
+      ".com",
+      ".hta",
+      ".bin",
+      ".iso",
+      ".wsf",
     ];
     const dotIdx = selectedFile.name.lastIndexOf(".");
-    const ext = dotIdx !== -1 ? selectedFile.name.substring(dotIdx).toLowerCase() : "";
+    const ext =
+      dotIdx !== -1 ? selectedFile.name.substring(dotIdx).toLowerCase() : "";
     if (dangerousExts.includes(ext)) {
       alert(`Dangerous file type '${ext}' is forbidden for security.`);
       return;
     }
 
     const allowedExts = [
-      ".pdf", ".png", ".jpg", ".jpeg", ".csv", ".xlsx", ".xls", ".txt", ".docx", ".doc"
+      ".pdf",
+      ".png",
+      ".jpg",
+      ".jpeg",
+      ".csv",
+      ".xlsx",
+      ".xls",
+      ".txt",
+      ".docx",
+      ".doc",
     ];
     if (!allowedExts.includes(ext)) {
-      alert(`Unsupported file type '${ext}'. Allowed types: PDF, PNG, JPG, JPEG, CSV, XLSX, TXT, DOCX`);
+      alert(
+        `Unsupported file type '${ext}'. Allowed types: PDF, PNG, JPG, JPEG, CSV, XLSX, TXT, DOCX`,
+      );
       return;
     }
 

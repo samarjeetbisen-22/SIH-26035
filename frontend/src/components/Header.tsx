@@ -162,13 +162,21 @@ export const Header: React.FC<HeaderProps> = ({
             {evaluationId ? (
               <div className="flex items-center space-x-1.5 px-2.5 py-1 rounded text-xs font-mono font-medium bg-blue-50 border border-blue-200 text-blue-800">
                 <span className="text-slate-500 font-normal">Eval:</span>
-                <span className="font-bold">{evaluationId.length > 15 ? evaluationId.slice(0, 15) + "…" : evaluationId}</span>
-                <span className={`text-[10px] px-1 py-0.5 rounded uppercase font-semibold ${
-                  evaluationStatus === 'APPROVED' ? 'bg-emerald-100 text-emerald-800' :
-                  evaluationStatus === 'SUBMITTED' ? 'bg-amber-100 text-amber-800' :
-                  'bg-white border border-blue-200 text-blue-700'
-                }`}>
-                  {evaluationStatus || 'DRAFT'}
+                <span className="font-bold">
+                  {evaluationId.length > 15
+                    ? evaluationId.slice(0, 15) + "…"
+                    : evaluationId}
+                </span>
+                <span
+                  className={`text-[10px] px-1 py-0.5 rounded uppercase font-semibold ${
+                    evaluationStatus === "APPROVED"
+                      ? "bg-emerald-100 text-emerald-800"
+                      : evaluationStatus === "SUBMITTED"
+                        ? "bg-amber-100 text-amber-800"
+                        : "bg-white border border-blue-200 text-blue-700"
+                  }`}
+                >
+                  {evaluationStatus || "DRAFT"}
                 </span>
               </div>
             ) : (

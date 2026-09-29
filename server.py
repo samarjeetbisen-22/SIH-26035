@@ -814,9 +814,9 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
                 self.send_error_json("Evaluation not found", 404)
                 return
 
-            if ev["status"] in ("APPROVED", "REJECTED"):
+            if ev["status"] == "APPROVED":
                 conn.close()
-                self.send_error_json("Cannot modify readings on a locked evaluation", 400)
+                self.send_error_json("Cannot modify readings on an approved evaluation", 400)
                 return
 
             readings_list = body.get("readings", [])
@@ -996,6 +996,11 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
                 self.send_error_json("Evaluation not found", 404)
                 return
 
+            if ev["status"] == "APPROVED":
+                conn.close()
+                self.send_error_json("Cannot submit an already approved evaluation", 400)
+                return
+
             readings_count = conn.execute("SELECT COUNT(*) FROM test_readings WHERE evaluation_id = ?", (eval_id,)).fetchone()[0]
             if readings_count == 0:
                 conn.close()
@@ -1009,11 +1014,12 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
             conn.commit()
             conn.close()
 
-            db.log_audit(user["sub"], "SUBMIT_FOR_REVIEW", "EVALUATION", eval_id, {}, self.client_address[0])
+            action_name = "RESUBMIT_FOR_REVIEW" if ev["status"] in ("REJECTED", "RETURNED") else "SUBMIT_FOR_REVIEW"
+            db.log_audit(user["sub"], action_name, "EVALUATION", eval_id, {"previous_status": ev["status"]}, self.client_address[0])
             self.send_json({"success": True, "status": "SUBMITTED", "message": "Evaluation submitted to Reviewer queue"})
             return
 
-        # 7. Real Review Workflow: Approve / Reject (/api/evaluations/<id>/review)
+        # 7. Real Review Workflow: Approve / Reject / Return / Under Review (/api/evaluations/<id>/review)
         elif path.startswith("/api/evaluations/") and path.endswith("/review"):
             eval_id = path.split("/")[3]
             user = self.get_auth_user()
@@ -1021,20 +1027,8 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
                 self.send_error_json("Access forbidden: Only Reviewers and Admins can approve/reject evaluations", 403)
                 return
 
-            verdict = (body.get("verdict") or body.get("action") or "").upper()
-            if verdict in ("APPROVE", "APPROVED"):
-                verdict = "APPROVE"
-            elif verdict in ("REJECT", "REJECTED"):
-                verdict = "REJECT"
+            action_raw = (body.get("verdict") or body.get("action") or "").upper().strip()
             comments = body.get("comments", "").strip()
-
-            if verdict not in ("APPROVE", "REJECT"):
-                self.send_error_json("Verdict must be either 'APPROVE' or 'REJECT'", 400)
-                return
-
-            if verdict == "REJECT" and not comments:
-                self.send_error_json("Rejection reason comments are required", 400)
-                return
 
             conn = db.get_db()
             ev = conn.execute("SELECT e.*, i.serial_number, i.accuracy_class FROM evaluations e JOIN instruments i ON e.instrument_id = i.id WHERE e.id = ?", (eval_id,)).fetchone()
@@ -1044,12 +1038,23 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
                 return
 
             now = datetime.datetime.now().isoformat()
-            today_str = now[:10]
-            next_year_str = (datetime.datetime.now() + datetime.timedelta(days=365)).strftime('%Y-%m-%d')
 
-            if verdict == "APPROVE":
+            if action_raw in ("UNDER_REVIEW", "INSPECT"):
+                conn.execute("""
+                UPDATE evaluations SET status = 'UNDER_REVIEW', reviewer_id = ?, updated_at = ? WHERE id = ?
+                """, (user["sub"], now, eval_id))
+                conn.commit()
+                conn.close()
+                db.log_audit(user["sub"], "REVIEW_INSPECT", "EVALUATION", eval_id, {"status": "UNDER_REVIEW"}, self.client_address[0])
+                self.send_json({"success": True, "status": "UNDER_REVIEW", "message": "Evaluation marked as under review"})
+                return
+
+            elif action_raw in ("APPROVE", "APPROVED"):
                 new_status = "APPROVED"
                 cert_no = f"CERT-DL-2026-{ev['serial_number'].replace('/', '').replace('-', '')[-6:]}"
+                today_str = now[:10]
+                next_year_str = (datetime.datetime.now() + datetime.timedelta(days=365)).strftime('%Y-%m-%d')
+
                 conn.execute("""
                 UPDATE evaluations SET 
                     status = 'APPROVED', reviewer_id = ?, review_comments = ?, certificate_number = ?,
@@ -1063,25 +1068,42 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
                 WHERE id = ?
                 """, (today_str, next_year_str, now, ev["instrument_id"]))
 
-            else:
-                new_status = "REJECTED"
+                conn.commit()
+                conn.close()
+
+                db.log_audit(user["sub"], "REVIEW_APPROVE", "EVALUATION", eval_id, {"certificate_number": cert_no, "comments": comments}, self.client_address[0])
+                self.send_json({"success": True, "verdict": "APPROVED", "status": "APPROVED", "certificate_number": cert_no, "message": "Evaluation approved successfully"})
+                return
+
+            elif action_raw in ("REJECT", "REJECTED", "RETURN", "RETURNED", "RETURN_FOR_CORRECTION"):
+                if not comments:
+                    conn.close()
+                    self.send_error_json("Review remarks explaining the return/rejection reason are required", 400)
+                    return
+
+                new_status = "RETURNED" if "RETURN" in action_raw else "REJECTED"
                 conn.execute("""
                 UPDATE evaluations SET 
-                    status = 'REJECTED', reviewer_id = ?, review_comments = ?, reviewed_at = ?, updated_at = ?
+                    status = ?, reviewer_id = ?, review_comments = ?, reviewed_at = ?, updated_at = ?
                 WHERE id = ?
-                """, (user["sub"], comments, now, now, eval_id))
+                """, (new_status, user["sub"], comments, now, now, eval_id))
 
                 conn.execute("""
-                UPDATE instruments SET status = 'REJECTED', updated_at = ? WHERE id = ?
+                UPDATE instruments SET status = 'PENDING_VERIFICATION', updated_at = ? WHERE id = ?
                 """, (now, ev["instrument_id"]))
 
-            conn.commit()
-            conn.close()
+                conn.commit()
+                conn.close()
 
-            audit_act = "REVIEW_APPROVE" if new_status == "APPROVED" else "REVIEW_REJECT"
-            db.log_audit(user["sub"], audit_act, "EVALUATION", eval_id, {"comments": comments}, self.client_address[0])
-            self.send_json({"success": True, "verdict": new_status, "status": new_status, "message": f"Evaluation {new_status.lower()} successfully"})
-            return
+                audit_act = "REVIEW_RETURN" if new_status == "RETURNED" else "REVIEW_REJECT"
+                db.log_audit(user["sub"], audit_act, "EVALUATION", eval_id, {"status": new_status, "comments": comments}, self.client_address[0])
+                self.send_json({"success": True, "verdict": new_status, "status": new_status, "message": f"Evaluation returned for correction ({new_status})"})
+                return
+
+            else:
+                conn.close()
+                self.send_error_json("Invalid review action. Must be 'APPROVE', 'REJECT', 'RETURN', or 'UNDER_REVIEW'", 400)
+                return
 
         # 8. Real Attachment Upload: POST /api/evaluations/<id>/attachments
         elif path.startswith("/api/evaluations/") and path.endswith("/attachments"):
@@ -1475,9 +1497,9 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
                 self.send_error_json("Evaluation not found", 404)
                 return
 
-            if ev["status"] in ("APPROVED", "REJECTED"):
+            if ev["status"] == "APPROVED":
                 conn.close()
-                self.send_error_json("Cannot modify finalized evaluation", 400)
+                self.send_error_json("Cannot modify finalized approved evaluation", 400)
                 return
 
             now = datetime.datetime.now().isoformat()

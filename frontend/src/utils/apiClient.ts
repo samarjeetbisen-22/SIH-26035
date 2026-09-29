@@ -248,7 +248,7 @@ export async function deleteEvaluation(evalId: string) {
   }
 }
 
-export async function reviewEvaluation(evalId: string, verdict: 'APPROVE' | 'REJECT', comments: string) {
+export async function reviewEvaluation(evalId: string, verdict: 'APPROVE' | 'REJECT' | 'RETURN' | 'UNDER_REVIEW', comments: string = '') {
   const token = getAuthToken();
   try {
     const res = await fetch(`${API_BASE}/evaluations/${evalId}/review`, {

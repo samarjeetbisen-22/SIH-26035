@@ -28,6 +28,7 @@ import {
   saveReadingsToEvaluation,
   deleteEvaluation,
   fetchEvaluations,
+  submitForReview,
   UserSession,
 } from "./utils/apiClient";
 import { LoginPage } from "./components/LoginPage";
@@ -82,6 +83,9 @@ export function App() {
     () => localStorage.getItem("metrolab_current_eval_id"),
   );
   const [evaluationStatus, setEvaluationStatus] = useState<string>("DRAFT");
+  const [reviewComments, setReviewComments] = useState<string>("");
+  const [certificateNumber, setCertificateNumber] = useState<string>("");
+  const [isSubmittingForReview, setIsSubmittingForReview] = useState<boolean>(false);
 
   // Backend Integration & Modals State
   const [backendOnline, setBackendOnline] = useState<boolean>(false);
@@ -122,6 +126,8 @@ export function App() {
         const ev = data.evaluation;
         setCurrentEvaluationId(ev.id);
         setEvaluationStatus(ev.status || "DRAFT");
+        setReviewComments(ev.review_comments || "");
+        setCertificateNumber(ev.certificate_number || "");
         localStorage.setItem("metrolab_current_eval_id", ev.id);
 
         // Keep instrument linked properly
@@ -252,6 +258,8 @@ export function App() {
   const handleNewEvaluation = () => {
     setCurrentEvaluationId(null);
     setEvaluationStatus("DRAFT");
+    setReviewComments("");
+    setCertificateNumber("");
     localStorage.removeItem("metrolab_current_eval_id");
     localStorage.removeItem("metrolab_draft_readings");
     setInstrument(DEFAULT_INSTRUMENT);
@@ -266,6 +274,8 @@ export function App() {
     if (found) {
       setCurrentEvaluationId(null);
       setEvaluationStatus("DRAFT");
+      setReviewComments("");
+      setCertificateNumber("");
       localStorage.removeItem("metrolab_current_eval_id");
       localStorage.removeItem("metrolab_draft_readings");
       setInstrument(found.instrument);
@@ -462,6 +472,38 @@ export function App() {
       }
     } finally {
       setIsSavingAudit(false);
+    }
+  };
+
+  // Real Review Workflow: Submit evaluation for Statutory Review
+  const handleSubmitForReview = async () => {
+    setIsSubmittingForReview(true);
+    try {
+      let evalId = currentEvaluationId;
+      if (!evalId) {
+        await handleSaveToAuditDb();
+        evalId = localStorage.getItem("metrolab_current_eval_id");
+      } else {
+        await handleSaveReadings();
+      }
+
+      if (!evalId) {
+        showToast("Please save the evaluation before submitting for review.");
+        return;
+      }
+
+      const res = await submitForReview(evalId);
+      if (res.success) {
+        setEvaluationStatus("SUBMITTED");
+        showToast("Evaluation submitted to Legal Metrology Reviewer queue!");
+        checkBackend();
+      } else {
+        showToast("Submission failed: " + (res.error || res.message || "Error"));
+      }
+    } catch (err: any) {
+      showToast("Submission error: " + (err.message || "Failed"));
+    } finally {
+      setIsSubmittingForReview(false);
     }
   };
 
@@ -757,6 +799,11 @@ export function App() {
             onGeneratePythonPdf={handleGeneratePythonPdf}
             isSavingAudit={isSavingAudit}
             isGeneratingPdf={isGeneratingPdf}
+            evaluationStatus={evaluationStatus}
+            reviewComments={reviewComments}
+            certificateNumber={certificateNumber}
+            onSubmitForReview={handleSubmitForReview}
+            isSubmittingForReview={isSubmittingForReview}
           />
         )}
       </main>

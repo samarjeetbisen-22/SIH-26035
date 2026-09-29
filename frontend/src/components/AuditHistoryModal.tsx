@@ -95,7 +95,9 @@ export const AuditHistoryModal: React.FC<AuditHistoryModalProps> = ({
                     <th className="py-2.5 px-3">Risk Level</th>
                     <th className="py-2.5 px-3">Verdict</th>
                     <th className="py-2.5 px-3">Inspector</th>
-                    {onSelectEvaluation && <th className="py-2.5 px-3 text-right">Action</th>}
+                    {onSelectEvaluation && (
+                      <th className="py-2.5 px-3 text-right">Action</th>
+                    )}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#E2E8F0] text-slate-800">

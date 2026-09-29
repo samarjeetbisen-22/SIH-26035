@@ -93,7 +93,7 @@ def init_db():
         instrument_id TEXT NOT NULL,
         inspector_id TEXT NOT NULL,
         reviewer_id TEXT,
-        status TEXT NOT NULL DEFAULT 'DRAFT' CHECK(status IN ('DRAFT', 'SUBMITTED', 'UNDER_REVIEW', 'APPROVED', 'REJECTED')),
+        status TEXT NOT NULL DEFAULT 'DRAFT' CHECK(status IN ('DRAFT', 'SUBMITTED', 'UNDER_REVIEW', 'APPROVED', 'REJECTED', 'RETURNED')),
         test_date TEXT NOT NULL,
         test_location TEXT NOT NULL,
         temperature_c REAL NOT NULL,
@@ -199,6 +199,54 @@ def init_db():
     ''')
 
     conn.commit()
+
+    # Migrate evaluations table if 'RETURNED' is missing from status check constraint
+    c.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='evaluations'")
+    ev_schema_row = c.fetchone()
+    if ev_schema_row and "RETURNED" not in ev_schema_row[0]:
+        c.execute("PRAGMA foreign_keys = OFF")
+        c.execute('''
+        CREATE TABLE evaluations_temp (
+            id TEXT PRIMARY KEY,
+            instrument_id TEXT NOT NULL,
+            inspector_id TEXT NOT NULL,
+            reviewer_id TEXT,
+            status TEXT NOT NULL DEFAULT 'DRAFT' CHECK(status IN ('DRAFT', 'SUBMITTED', 'UNDER_REVIEW', 'APPROVED', 'REJECTED', 'RETURNED')),
+            test_date TEXT NOT NULL,
+            test_location TEXT NOT NULL,
+            temperature_c REAL NOT NULL,
+            humidity_percent REAL NOT NULL,
+            pressure_hpa REAL NOT NULL,
+            gravity_mps2 REAL NOT NULL DEFAULT 9.7915,
+            reference_standard TEXT,
+            standards_traceability_no TEXT,
+            repeatability_error REAL DEFAULT 0.0,
+            linearity_error REAL DEFAULT 0.0,
+            hysteresis_error REAL DEFAULT 0.0,
+            eccentricity_error REAL DEFAULT 0.0,
+            combined_uncertainty REAL DEFAULT 0.0,
+            expanded_uncertainty REAL DEFAULT 0.0,
+            compliance_score REAL DEFAULT 0.0,
+            risk_level TEXT DEFAULT 'LOW',
+            conformity INTEGER DEFAULT 0,
+            verification_hash TEXT,
+            certificate_number TEXT,
+            review_comments TEXT,
+            reviewed_at TEXT,
+            submitted_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (instrument_id) REFERENCES instruments(id),
+            FOREIGN KEY (inspector_id) REFERENCES users(id),
+            FOREIGN KEY (reviewer_id) REFERENCES users(id)
+        )
+        ''')
+        c.execute("INSERT INTO evaluations_temp SELECT * FROM evaluations")
+        c.execute("DROP TABLE evaluations")
+        c.execute("ALTER TABLE evaluations_temp RENAME TO evaluations")
+        c.execute("PRAGMA foreign_keys = ON")
+        conn.commit()
+
     conn.close()
 
 def log_audit(user_id: str, action: str, entity_type: str, entity_id: str = None, details: dict = None, ip_address: str = "127.0.0.1"):

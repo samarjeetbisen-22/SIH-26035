@@ -8,6 +8,8 @@ import {
   Download,
   RefreshCw,
   ShieldCheck,
+  RotateCcw,
+  Eye,
 } from "lucide-react";
 import {
   fetchEvaluations,
@@ -56,11 +58,11 @@ export const ReviewerQueueModal: React.FC<ReviewerQueueModalProps> = ({
 
   if (!isOpen) return null;
 
-  const handleReviewAction = async (verdict: "APPROVE" | "REJECT") => {
+  const handleReviewAction = async (verdict: "APPROVE" | "REJECT" | "RETURN" | "UNDER_REVIEW") => {
     if (!selectedEval) return;
-    if (verdict === "REJECT" && !comments.trim()) {
+    if ((verdict === "REJECT" || verdict === "RETURN") && !comments.trim()) {
       alert(
-        "Please provide comments explaining why the evaluation was rejected.",
+        "Please provide remarks explaining why the evaluation was returned/rejected for correction.",
       );
       return;
     }
@@ -72,14 +74,19 @@ export const ReviewerQueueModal: React.FC<ReviewerQueueModalProps> = ({
         comments ||
           (verdict === "APPROVE"
             ? "Statutory OIML R-76 requirements verified and approved."
-            : "Rejected."),
+            : verdict === "UNDER_REVIEW"
+              ? "Inspection initiated by Reviewer."
+              : "Returned for correction."),
       );
       if (res.success) {
         onNotification(
-          `Evaluation ${selectedEval.serial_number || selectedEval.id} marked as ${verdict}D`,
+          `Evaluation ${selectedEval.serial_number || selectedEval.id} status updated to ${res.status || verdict}`,
         );
         setComments("");
         await loadQueue();
+        if (selectedEval) {
+          setSelectedEval({ ...selectedEval, status: res.status || verdict });
+        }
       } else {
         alert(res.error || "Failed to review evaluation");
       }
@@ -167,11 +174,17 @@ export const ReviewerQueueModal: React.FC<ReviewerQueueModalProps> = ({
                     </span>
                     <span
                       className={`text-[10px] font-mono px-1.5 py-0.5 rounded font-medium border ${
-                        isApproved
+                        ev.status === "APPROVED"
                           ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                          : isSubmitted
-                            ? "bg-amber-50 text-amber-700 border-amber-200 animate-pulse"
-                            : "bg-slate-100 text-slate-700 border-slate-200"
+                          : ev.status === "SUBMITTED"
+                            ? "bg-amber-50 text-amber-700 border-amber-200 animate-pulse font-semibold"
+                            : ev.status === "UNDER_REVIEW"
+                              ? "bg-blue-50 text-blue-700 border-blue-200"
+                              : ev.status === "RETURNED"
+                                ? "bg-orange-50 text-orange-700 border-orange-200"
+                                : ev.status === "REJECTED"
+                                  ? "bg-rose-50 text-rose-700 border-rose-200"
+                                  : "bg-slate-100 text-slate-700 border-slate-200"
                       }`}
                     >
                       {ev.status}
@@ -301,8 +314,14 @@ export const ReviewerQueueModal: React.FC<ReviewerQueueModalProps> = ({
                     </button>
                     {onSelectEvaluation && (
                       <button
-                        onClick={() => onSelectEvaluation(selectedEval.id)}
+                        onClick={async () => {
+                          if (selectedEval.status === "SUBMITTED") {
+                            await handleReviewAction("UNDER_REVIEW");
+                          }
+                          onSelectEvaluation(selectedEval.id);
+                        }}
                         className="flex items-center space-x-1.5 px-3 py-2 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded hover:bg-blue-100 shadow-sm transition-colors"
+                        title="Open evaluation readings & test records in Metrolab workspace"
                       >
                         <FileText className="w-4 h-4 text-blue-600" />
                         <span>Open in Workspace</span>
@@ -311,13 +330,33 @@ export const ReviewerQueueModal: React.FC<ReviewerQueueModalProps> = ({
                   </div>
 
                   <div className="flex items-center space-x-2">
+                    {selectedEval.status === "SUBMITTED" && (
+                      <button
+                        onClick={() => handleReviewAction("UNDER_REVIEW")}
+                        disabled={actionLoading}
+                        className="flex items-center space-x-1.5 px-3 py-2 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded hover:bg-blue-100 transition-colors"
+                        title="Mark evaluation as actively under statutory review"
+                      >
+                        <Eye className="w-4 h-4" />
+                        <span>Inspect</span>
+                      </button>
+                    )}
+                    <button
+                      onClick={() => handleReviewAction("RETURN")}
+                      disabled={actionLoading}
+                      className="flex items-center space-x-1.5 px-3 py-2 text-xs font-medium text-amber-800 bg-amber-50 border border-amber-300 rounded hover:bg-amber-100 transition-colors"
+                      title="Return evaluation back to technician for corrections"
+                    >
+                      <RotateCcw className="w-4 h-4 text-amber-600" />
+                      <span>Return for Correction</span>
+                    </button>
                     <button
                       onClick={() => handleReviewAction("REJECT")}
                       disabled={actionLoading}
-                      className="flex items-center space-x-1.5 px-4 py-2 text-xs font-medium text-rose-700 bg-rose-50 border border-rose-200 rounded hover:bg-rose-100 transition-colors"
+                      className="flex items-center space-x-1.5 px-3 py-2 text-xs font-medium text-rose-700 bg-rose-50 border border-rose-200 rounded hover:bg-rose-100 transition-colors"
                     >
                       <XCircle className="w-4 h-4" />
-                      <span>Reject (Re-Test)</span>
+                      <span>Reject</span>
                     </button>
                     <button
                       onClick={() => handleReviewAction("APPROVE")}
