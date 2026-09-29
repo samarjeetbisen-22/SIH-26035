@@ -380,7 +380,7 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
             SELECT id, test_type, load_val, reading, error, mpe, ratio, passed, direction, position, repeat_number
             FROM test_readings
             WHERE evaluation_id = ?
-            ORDER BY repeat_number, load_val, direction
+            ORDER BY rowid ASC
             """, (eval_id,)).fetchall()
 
             attachments = conn.execute("""
@@ -824,6 +824,9 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
             self.send_json({
                 "success": True,
                 "inserted_count": len(results["point_results"]),
+                "readings_count": len(results["point_results"]),
+                "compliance_score": results["compliance_score"],
+                "conformity": results["conformity"],
                 "message": f"Successfully stored {len(results['point_results'])} readings and verified OIML compliance",
                 "calculations": results
             })

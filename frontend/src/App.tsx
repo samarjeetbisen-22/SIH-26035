@@ -25,6 +25,7 @@ import {
   fetchEvaluationDetails,
   createEvaluation,
   updateEvaluation,
+  saveReadingsToEvaluation,
   deleteEvaluation,
   fetchEvaluations,
   UserSession,
@@ -57,7 +58,18 @@ export function App() {
     useState<InstrumentProfile>(DEFAULT_INSTRUMENT);
   const [conditions, setConditions] =
     useState<TestConditions>(DEFAULT_CONDITIONS);
-  const [readings, setReadings] = useState<ReadingItem[]>(DEFAULT_READINGS);
+  const [readings, setReadings] = useState<ReadingItem[]>(() => {
+    try {
+      const savedDraft = localStorage.getItem("metrolab_draft_readings");
+      if (savedDraft) {
+        const parsed = JSON.parse(savedDraft);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {
+      // fallback to default
+    }
+    return DEFAULT_READINGS;
+  });
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   // Authentication State
@@ -117,16 +129,26 @@ export function App() {
           manufacturer: ev.manufacturer || DEFAULT_INSTRUMENT.manufacturer,
           model: ev.model || DEFAULT_INSTRUMENT.model,
           serialNumber: ev.serial_number || DEFAULT_INSTRUMENT.serialNumber,
-          accuracyClass: (ev.accuracy_class as any) || DEFAULT_INSTRUMENT.accuracyClass,
-          maxCapacity: Number(ev.max_capacity) || DEFAULT_INSTRUMENT.maxCapacity,
-          minCapacity: Number(ev.min_capacity) || DEFAULT_INSTRUMENT.minCapacity,
-          verificationScaleIntervalE: Number(ev.e_interval) || DEFAULT_INSTRUMENT.verificationScaleIntervalE,
-          actualScaleIntervalD: Number(ev.d_interval) || DEFAULT_INSTRUMENT.actualScaleIntervalD,
-          tareCapacity: Number(ev.tare_capacity) || DEFAULT_INSTRUMENT.tareCapacity,
+          accuracyClass:
+            (ev.accuracy_class as any) || DEFAULT_INSTRUMENT.accuracyClass,
+          maxCapacity:
+            Number(ev.max_capacity) || DEFAULT_INSTRUMENT.maxCapacity,
+          minCapacity:
+            Number(ev.min_capacity) || DEFAULT_INSTRUMENT.minCapacity,
+          verificationScaleIntervalE:
+            Number(ev.e_interval) ||
+            DEFAULT_INSTRUMENT.verificationScaleIntervalE,
+          actualScaleIntervalD:
+            Number(ev.d_interval) || DEFAULT_INSTRUMENT.actualScaleIntervalD,
+          tareCapacity:
+            Number(ev.tare_capacity) || DEFAULT_INSTRUMENT.tareCapacity,
           unit: ev.unit || DEFAULT_INSTRUMENT.unit,
-          typeApprovalNo: ev.type_approval_no || DEFAULT_INSTRUMENT.typeApprovalNo,
-          yearOfManufacture: ev.year_of_manufacture || DEFAULT_INSTRUMENT.yearOfManufacture,
-          countryOfOrigin: ev.country_of_origin || DEFAULT_INSTRUMENT.countryOfOrigin,
+          typeApprovalNo:
+            ev.type_approval_no || DEFAULT_INSTRUMENT.typeApprovalNo,
+          yearOfManufacture:
+            ev.year_of_manufacture || DEFAULT_INSTRUMENT.yearOfManufacture,
+          countryOfOrigin:
+            ev.country_of_origin || DEFAULT_INSTRUMENT.countryOfOrigin,
         });
 
         // Restore Test Conditions
@@ -135,24 +157,48 @@ export function App() {
           testLocation: ev.test_location || prev.testLocation,
           temperatureC: Number(ev.temperature_c) || prev.temperatureC,
           humidityPercent: Number(ev.humidity_percent) || prev.humidityPercent,
-          barometricPressureHpa: Number(ev.pressure_hpa) || prev.barometricPressureHpa,
+          barometricPressureHpa:
+            Number(ev.pressure_hpa) || prev.barometricPressureHpa,
           gravityMps2: Number(ev.gravity_mps2) || prev.gravityMps2,
-          referenceMassStandard: ev.reference_standard || prev.referenceMassStandard,
-          standardsTraceabilityNo: ev.standards_traceability_no || prev.standardsTraceabilityNo,
+          referenceMassStandard:
+            ev.reference_standard || prev.referenceMassStandard,
+          standardsTraceabilityNo:
+            ev.standards_traceability_no || prev.standardsTraceabilityNo,
           testDate: ev.test_date || prev.testDate,
         }));
 
         // Restore Readings
         if (data.readings && data.readings.length > 0) {
-          const mapped: ReadingItem[] = data.readings.map((r: any, idx: number) => ({
-            id: r.id || `rd_${idx + 1}`,
-            load: Number(r.load_val),
-            reading: Number(r.reading),
-            direction: (r.direction as any) || "increasing",
-            position: (r.position as any) || "center",
-            repeatNumber: Number(r.repeat_number) || 1,
-          }));
+          const mapped: ReadingItem[] = data.readings.map(
+            (r: any, idx: number) => ({
+              id: r.id || `rd_${idx + 1}`,
+              load: Number(r.load_val),
+              reading: Number(r.reading),
+              direction: (r.direction as any) || "increasing",
+              position: (r.position as any) || "center",
+              repeatNumber: Number(r.repeat_number) || 1,
+              testType:
+                (r.test_type as any) ||
+                (r.position && r.position !== "center"
+                  ? "ECCENTRICITY"
+                  : Number(r.repeat_number) > 1
+                    ? "REPEATABILITY"
+                    : "LOAD"),
+            }),
+          );
           setReadings(mapped);
+          try {
+            localStorage.setItem(
+              "metrolab_draft_readings",
+              JSON.stringify(mapped),
+            );
+            localStorage.setItem(
+              `metrolab_readings_${ev.id}`,
+              JSON.stringify(mapped),
+            );
+          } catch {
+            // ignore
+          }
         }
 
         showToast(`Loaded evaluation ${ev.id} (${ev.status})`);
@@ -191,20 +237,23 @@ export function App() {
     if (backendOnline && currentEvaluationId) {
       loadEvaluation(currentEvaluationId);
     }
-  }, [backendOnline]);
+  }, [backendOnline, currentEvaluationId]);
 
   // Live Metrological Calculations Engine
   const computation = useMemo(() => {
     return computeMetrology(instrument, readings);
   }, [instrument, readings]);
 
-  const reportId = currentEvaluationId || `REP-${instrument.accuracyClass}-${instrument.serialNumber.replace(/[^A-Za-z0-9]/g, "").slice(-6)}-2026`;
+  const reportId =
+    currentEvaluationId ||
+    `REP-${instrument.accuracyClass}-${instrument.serialNumber.replace(/[^A-Za-z0-9]/g, "").slice(-6)}-2026`;
 
   // Start Clean New Evaluation
   const handleNewEvaluation = () => {
     setCurrentEvaluationId(null);
     setEvaluationStatus("DRAFT");
     localStorage.removeItem("metrolab_current_eval_id");
+    localStorage.removeItem("metrolab_draft_readings");
     setInstrument(DEFAULT_INSTRUMENT);
     setConditions(DEFAULT_CONDITIONS);
     setReadings(DEFAULT_READINGS);
@@ -218,9 +267,16 @@ export function App() {
       setCurrentEvaluationId(null);
       setEvaluationStatus("DRAFT");
       localStorage.removeItem("metrolab_current_eval_id");
+      localStorage.removeItem("metrolab_draft_readings");
       setInstrument(found.instrument);
       setConditions(found.conditions);
       setReadings(found.readings);
+      try {
+        localStorage.setItem(
+          "metrolab_draft_readings",
+          JSON.stringify(found.readings),
+        );
+      } catch {}
       showToast(`Loaded preset: ${found.name}`);
     }
   };
@@ -230,10 +286,30 @@ export function App() {
     setCurrentEvaluationId(null);
     setEvaluationStatus("DRAFT");
     localStorage.removeItem("metrolab_current_eval_id");
+    localStorage.removeItem("metrolab_draft_readings");
     setInstrument(DEFAULT_INSTRUMENT);
     setConditions(DEFAULT_CONDITIONS);
     setReadings(DEFAULT_READINGS);
     showToast("Reset all test parameters to baseline dataset");
+  };
+
+  // Persistent live draft updater
+  const handleUpdateReadings = (updatedReadings: ReadingItem[]) => {
+    setReadings(updatedReadings);
+    try {
+      localStorage.setItem(
+        "metrolab_draft_readings",
+        JSON.stringify(updatedReadings),
+      );
+      if (currentEvaluationId) {
+        localStorage.setItem(
+          `metrolab_readings_${currentEvaluationId}`,
+          JSON.stringify(updatedReadings),
+        );
+      }
+    } catch {
+      // ignore
+    }
   };
 
   // Print Certificate (triggers window.print with @media print stylesheet)
@@ -241,22 +317,100 @@ export function App() {
     window.print();
   };
 
+  // Direct readings save to SQLite
+  const handleSaveReadings = async () => {
+    setIsSavingAudit(true);
+    try {
+      const formattedReadings = readings.map((r) => {
+        let testType = r.testType;
+        if (!testType) {
+          if (r.position && r.position !== "center") {
+            testType = "ECCENTRICITY";
+          } else if ((r.repeatNumber || 1) > 1) {
+            testType = "REPEATABILITY";
+          } else {
+            testType = "LOAD";
+          }
+        }
+        return {
+          id: r.id,
+          load: r.load,
+          reading: r.reading,
+          direction: r.direction || "increasing",
+          position: r.position || "center",
+          repeat_number: r.repeatNumber || 1,
+          test_type: testType,
+        };
+      });
+
+      if (currentEvaluationId) {
+        const res = await saveReadingsToEvaluation(
+          currentEvaluationId,
+          formattedReadings,
+        );
+        if (res.success) {
+          showToast(
+            `Saved ${formattedReadings.length} readings permanently to database`,
+          );
+          checkBackend();
+        } else {
+          const updateRes = await updateEvaluation(currentEvaluationId, {
+            status: evaluationStatus,
+            readings: formattedReadings,
+          });
+          if (updateRes.success) {
+            showToast(
+              `Saved readings permanently to evaluation ${currentEvaluationId}`,
+            );
+            checkBackend();
+          } else {
+            showToast(
+              "Failed to save readings: " +
+                (res.error || updateRes.error || "Error"),
+            );
+          }
+        }
+      } else {
+        await handleSaveToAuditDb();
+      }
+    } catch (e: any) {
+      showToast("Error saving readings: " + (e.message || "Failed"));
+    } finally {
+      setIsSavingAudit(false);
+    }
+  };
+
   // Backend: Save to SQLite nawi_audit.db (CREATE or UPDATE evaluation permanently)
   const handleSaveToAuditDb = async () => {
     setIsSavingAudit(true);
     try {
-      const formattedReadings = readings.map((r) => ({
-        load: r.load,
-        reading: r.reading,
-        direction: r.direction || "increasing",
-        position: r.position || "center",
-        repeat_number: r.repeatNumber || 1,
-      }));
+      const formattedReadings = readings.map((r) => {
+        let testType = r.testType;
+        if (!testType) {
+          if (r.position && r.position !== "center") {
+            testType = "ECCENTRICITY";
+          } else if ((r.repeatNumber || 1) > 1) {
+            testType = "REPEATABILITY";
+          } else {
+            testType = "LOAD";
+          }
+        }
+        return {
+          id: r.id,
+          load: r.load,
+          reading: r.reading,
+          direction: r.direction || "increasing",
+          position: r.position || "center",
+          repeat_number: r.repeatNumber || 1,
+          test_type: testType,
+        };
+      });
 
       if (currentEvaluationId) {
         // UPDATE existing evaluation permanently
         const res = await updateEvaluation(currentEvaluationId, {
-          test_date: conditions.testDate || new Date().toISOString().slice(0, 10),
+          test_date:
+            conditions.testDate || new Date().toISOString().slice(0, 10),
           test_location: conditions.testLocation,
           temperature_c: conditions.temperatureC,
           humidity_percent: conditions.humidityPercent,
@@ -269,7 +423,9 @@ export function App() {
         });
 
         if (res.success) {
-          showToast(`Saved changes permanently to evaluation ${currentEvaluationId}`);
+          showToast(
+            `Saved changes permanently to evaluation ${currentEvaluationId}`,
+          );
           checkBackend();
         } else {
           showToast("Update failed: " + (res.error || res.message || "Error"));
@@ -279,7 +435,8 @@ export function App() {
         const res = await createEvaluation({
           instrument,
           serial_number: instrument.serialNumber,
-          test_date: conditions.testDate || new Date().toISOString().slice(0, 10),
+          test_date:
+            conditions.testDate || new Date().toISOString().slice(0, 10),
           test_location: conditions.testLocation,
           temperature_c: conditions.temperatureC,
           humidity_percent: conditions.humidityPercent,
@@ -295,7 +452,9 @@ export function App() {
           setCurrentEvaluationId(res.evaluation_id);
           setEvaluationStatus(res.status || "DRAFT");
           localStorage.setItem("metrolab_current_eval_id", res.evaluation_id);
-          showToast(`Created & permanently saved evaluation ${res.evaluation_id}`);
+          showToast(
+            `Created & permanently saved evaluation ${res.evaluation_id}`,
+          );
           checkBackend();
         } else {
           showToast("Create failed: " + (res.error || res.message || "Error"));
@@ -572,13 +731,15 @@ export function App() {
             instrument={instrument}
             readings={readings}
             computation={computation}
-            onUpdateReadings={setReadings}
+            onUpdateReadings={handleUpdateReadings}
             onProceedToReport={() => {
               setCurrentTab("report");
               showToast(
                 "Calculations updated. Ready for official report generation.",
               );
             }}
+            onSaveReadings={handleSaveReadings}
+            isSavingReadings={isSavingAudit}
           />
         )}
 

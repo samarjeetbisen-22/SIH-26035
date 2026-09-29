@@ -40,6 +40,7 @@ export interface ReadingItem {
   direction: LoadDirection;
   repeatNumber: number;
   position: PlatformPosition;
+  testType?: 'LOAD' | 'ECCENTRICITY' | 'REPEATABILITY';
 }
 
 export interface PointResult {

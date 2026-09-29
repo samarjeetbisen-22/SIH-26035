@@ -64,8 +64,19 @@ def validate_oiml_compliance(instrument: dict, readings: list) -> dict:
         reading_val = float(r.get('reading', load_val))
         direction = str(r.get('direction', 'increasing')).lower()
         position = str(r.get('position', 'center'))
+        if position not in ('center', 'front-left', 'front-right', 'back-left', 'back-right'):
+            position = 'center'
         repeat_no = int(r.get('repeat_number') or r.get('repeatNumber') or 1)
-        test_type = str(r.get('test_type') or r.get('testType') or 'LOAD').upper()
+        raw_tt = r.get('test_type') or r.get('testType')
+        if raw_tt and str(raw_tt).upper() in ('LOAD', 'ECCENTRICITY', 'REPEATABILITY'):
+            test_type = str(raw_tt).upper()
+        else:
+            if position != 'center':
+                test_type = 'ECCENTRICITY'
+            elif repeat_no > 1:
+                test_type = 'REPEATABILITY'
+            else:
+                test_type = 'LOAD'
 
         load_e = load_val / e
         mpe_e = calculate_mpe(load_e, acc_class)
@@ -79,6 +90,7 @@ def validate_oiml_compliance(instrument: dict, readings: list) -> dict:
         ratio = abs(error_val) / mpe_val if mpe_val > 0 else 0.0
 
         item = {
+            'id': r.get('id'),
             'load': load_val,
             'reading': reading_val,
             'error': error_val,

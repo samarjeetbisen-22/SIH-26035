@@ -21,6 +21,8 @@ import {
   Sparkles,
   HelpCircle,
   ArrowRight,
+  Database,
+  Save,
 } from "lucide-react";
 import { calculateMpe } from "../utils/oimlEngine";
 
@@ -30,6 +32,8 @@ interface DataEntryDashboardProps {
   computation: MetrologyComputation;
   onUpdateReadings: (readings: ReadingItem[]) => void;
   onProceedToReport: () => void;
+  onSaveReadings?: () => void;
+  isSavingReadings?: boolean;
 }
 
 export const DataEntryDashboard: React.FC<DataEntryDashboardProps> = ({
@@ -38,6 +42,8 @@ export const DataEntryDashboard: React.FC<DataEntryDashboardProps> = ({
   computation,
   onUpdateReadings,
   onProceedToReport,
+  onSaveReadings,
+  isSavingReadings,
 }) => {
   const [activeSubTab, setActiveSubTab] = useState<
     "all" | "load" | "eccentricity" | "repeatability"
@@ -59,6 +65,12 @@ export const DataEntryDashboard: React.FC<DataEntryDashboardProps> = ({
     position: PlatformPosition = "center",
     repeatNumber: number = 1,
   ) => {
+    let testType: "LOAD" | "ECCENTRICITY" | "REPEATABILITY" = "LOAD";
+    if (activeSubTab === "eccentricity" || position !== "center") {
+      testType = "ECCENTRICITY";
+    } else if (activeSubTab === "repeatability" || repeatNumber > 1) {
+      testType = "REPEATABILITY";
+    }
     const newItem: ReadingItem = {
       id: "row-" + Date.now() + "-" + Math.random().toString(36).substr(2, 4),
       load: Number(load.toFixed(4)),
@@ -66,6 +78,7 @@ export const DataEntryDashboard: React.FC<DataEntryDashboardProps> = ({
       direction,
       repeatNumber,
       position,
+      testType,
     };
     onUpdateReadings([...readings, newItem]);
   };
@@ -100,6 +113,7 @@ export const DataEntryDashboard: React.FC<DataEntryDashboardProps> = ({
         direction: "increasing",
         repeatNumber: 1,
         position: "center",
+        testType: "LOAD",
       });
     });
 
@@ -113,6 +127,7 @@ export const DataEntryDashboard: React.FC<DataEntryDashboardProps> = ({
           direction: "decreasing",
           repeatNumber: 1,
           position: "center",
+          testType: "LOAD",
         });
       }
     });
@@ -127,6 +142,7 @@ export const DataEntryDashboard: React.FC<DataEntryDashboardProps> = ({
           direction: "increasing",
           repeatNumber: run,
           position: "center",
+          testType: "REPEATABILITY",
         });
       });
     });
@@ -149,6 +165,7 @@ export const DataEntryDashboard: React.FC<DataEntryDashboardProps> = ({
         direction: "increasing",
         repeatNumber: 1,
         position: pos,
+        testType: "ECCENTRICITY",
       });
     });
 
@@ -160,13 +177,16 @@ export const DataEntryDashboard: React.FC<DataEntryDashboardProps> = ({
     .filter((r) => {
       if (activeSubTab === "eccentricity") {
         return (
+          r.testType === "ECCENTRICITY" ||
           r.position !== "center" ||
           (r.load === computation.eccentricitySummary.testLoad &&
-            r.repeatNumber === 1)
+            r.repeatNumber === 1 &&
+            r.testType !== "LOAD")
         );
       }
       if (activeSubTab === "repeatability") {
         return (
+          r.testType === "REPEATABILITY" ||
           r.repeatNumber > 1 ||
           (r.direction === "increasing" &&
             readings.filter((x) => x.load === r.load && x.position === "center")
@@ -174,7 +194,11 @@ export const DataEntryDashboard: React.FC<DataEntryDashboardProps> = ({
         );
       }
       if (activeSubTab === "load") {
-        return r.position === "center" || !r.position;
+        return (
+          (!r.testType || r.testType === "LOAD") &&
+          (r.position === "center" || !r.position) &&
+          (r.repeatNumber === 1 || !r.repeatNumber)
+        );
       }
       return true;
     })
@@ -320,6 +344,18 @@ export const DataEntryDashboard: React.FC<DataEntryDashboardProps> = ({
               </button>
             </div>
           </div>
+
+          {onSaveReadings && (
+            <button
+              onClick={onSaveReadings}
+              disabled={isSavingReadings}
+              className="flex items-center space-x-1.5 px-3 py-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded transition-colors shadow-subtle disabled:opacity-50"
+              title="Save all readings permanently to the database"
+            >
+              <Database className="w-3.5 h-3.5" />
+              <span>{isSavingReadings ? "Saving..." : "Save Readings"}</span>
+            </button>
+          )}
 
           <button
             onClick={() => handleAddRow()}
@@ -813,6 +849,16 @@ export const DataEntryDashboard: React.FC<DataEntryDashboardProps> = ({
             >
               + Add Load Point
             </button>
+            {onSaveReadings && (
+              <button
+                onClick={onSaveReadings}
+                disabled={isSavingReadings}
+                className="flex items-center space-x-1.5 px-3 py-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded transition-colors disabled:opacity-50"
+              >
+                <Database className="w-3.5 h-3.5" />
+                <span>{isSavingReadings ? "Saving..." : "Save Readings"}</span>
+              </button>
+            )}
             <button
               onClick={onProceedToReport}
               className="flex items-center space-x-2 px-4 py-2 text-xs font-semibold text-white bg-[#2563EB] hover:bg-[#1D4ED8] rounded transition-colors shadow-subtle"
