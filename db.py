@@ -80,7 +80,7 @@ def init_db():
         year_of_manufacture INTEGER,
         country_of_origin TEXT,
         owner_id TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'REGISTERED' CHECK(status IN ('REGISTERED', 'PENDING_VERIFICATION', 'VERIFIED', 'REJECTED', 'EXPIRED')),
+        status TEXT NOT NULL DEFAULT 'REGISTERED' CHECK(status IN ('REGISTERED', 'PENDING_VERIFICATION', 'VERIFIED', 'REJECTED', 'EXPIRED', 'ARCHIVED', 'DECOMMISSIONED')),
         last_verified_at TEXT,
         next_verification_due TEXT,
         created_at TEXT NOT NULL,
@@ -278,6 +278,42 @@ def init_db():
         c.execute("INSERT INTO evaluations_temp SELECT * FROM evaluations")
         c.execute("DROP TABLE evaluations")
         c.execute("ALTER TABLE evaluations_temp RENAME TO evaluations")
+        c.execute("PRAGMA foreign_keys = ON")
+        conn.commit()
+
+    # Migrate instruments table if 'ARCHIVED' is missing from status check constraint
+    c.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='instruments'")
+    inst_schema_row = c.fetchone()
+    if inst_schema_row and "ARCHIVED" not in inst_schema_row[0]:
+        c.execute("PRAGMA foreign_keys = OFF")
+        c.execute('''
+        CREATE TABLE instruments_temp (
+            id TEXT PRIMARY KEY,
+            serial_number TEXT UNIQUE NOT NULL,
+            model TEXT NOT NULL,
+            manufacturer TEXT NOT NULL,
+            accuracy_class TEXT NOT NULL CHECK(accuracy_class IN ('I', 'II', 'III', 'IIII')),
+            max_capacity REAL NOT NULL,
+            min_capacity REAL NOT NULL,
+            e_interval REAL NOT NULL,
+            d_interval REAL NOT NULL,
+            unit TEXT NOT NULL DEFAULT 'kg',
+            tare_capacity REAL NOT NULL,
+            type_approval_no TEXT,
+            year_of_manufacture INTEGER,
+            country_of_origin TEXT,
+            owner_id TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'REGISTERED' CHECK(status IN ('REGISTERED', 'PENDING_VERIFICATION', 'VERIFIED', 'REJECTED', 'EXPIRED', 'ARCHIVED', 'DECOMMISSIONED')),
+            last_verified_at TEXT,
+            next_verification_due TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (owner_id) REFERENCES users(id)
+        )
+        ''')
+        c.execute("INSERT INTO instruments_temp SELECT * FROM instruments")
+        c.execute("DROP TABLE instruments")
+        c.execute("ALTER TABLE instruments_temp RENAME TO instruments")
         c.execute("PRAGMA foreign_keys = ON")
         conn.commit()
 

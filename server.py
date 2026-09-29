@@ -779,20 +779,21 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
                 self.send_error_json("Unauthorized to create instruments", 403)
                 return
 
-            serial = body.get("serial_number", "").strip()
-            model = body.get("model", "").strip()
-            manufacturer = body.get("manufacturer", "").strip()
-            accuracy_class = body.get("accuracy_class", "III").strip()
-            max_cap = float(body.get("max_capacity", 0))
-            min_cap = float(body.get("min_capacity", 0))
-            e_val = float(body.get("e_interval", 0.001))
-            d_val = float(body.get("d_interval", e_val))
-            tare = float(body.get("tare_capacity", max_cap))
-            unit = body.get("unit", "kg")
-            type_app = body.get("type_approval_no", "")
-            year = int(body.get("year_of_manufacture", datetime.datetime.now().year))
-            country = body.get("country_of_origin", "India")
-            owner_id = user["sub"] if user["role"] == "OWNER" else body.get("owner_id", user["sub"])
+            serial = (body.get("serial_number") or body.get("serialNumber") or "").strip()
+            model = (body.get("model") or "").strip()
+            manufacturer = (body.get("manufacturer") or "").strip()
+            accuracy_class = (body.get("accuracy_class") or body.get("accuracyClass") or "III").strip()
+            max_cap = float(body.get("max_capacity") or body.get("maxCapacity") or 0)
+            min_cap = float(body.get("min_capacity") or body.get("minCapacity") or 0)
+            e_val = float(body.get("e_interval") or body.get("verificationScaleIntervalE") or 0.001)
+            d_val = float(body.get("d_interval") or body.get("actualScaleIntervalD") or e_val)
+            tare = float(body.get("tare_capacity") or body.get("tareCapacity") or max_cap)
+            unit = body.get("unit") or "kg"
+            type_app = (body.get("type_approval_no") or body.get("typeApprovalNo") or body.get("typeApprovalNumber") or "").strip()
+            year = int(body.get("year_of_manufacture") or body.get("yearOfManufacture") or datetime.datetime.now().year)
+            country = (body.get("country_of_origin") or body.get("countryOfOrigin") or "India").strip()
+            owner_id = user["sub"] if user["role"] == "OWNER" else (body.get("owner_id") or user["sub"])
+            custom_id = body.get("id") or body.get("instrument_id")
 
             if not serial or not model or max_cap <= 0 or e_val <= 0:
                 self.send_error_json("Invalid instrument parameters: serial, model, capacity and e required", 400)
@@ -805,7 +806,7 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
                 self.send_error_json(f"Instrument with serial '{serial}' already exists", 409)
                 return
 
-            inst_id = f"inst_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(4)}"
+            inst_id = custom_id if custom_id else f"inst_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(4)}"
             now = datetime.datetime.now().isoformat()
 
             conn.execute("""
@@ -841,7 +842,35 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
                 user_role=user.get("role"),
                 user_name=user.get("full_name")
             )
-            self.send_json({"success": True, "instrument_id": inst_id, "message": "Instrument registered successfully"}, 201)
+            inst_obj = {
+                "id": inst_id,
+                "serial_number": serial,
+                "serialNumber": serial,
+                "model": model,
+                "manufacturer": manufacturer,
+                "accuracy_class": accuracy_class,
+                "accuracyClass": accuracy_class,
+                "max_capacity": max_cap,
+                "maxCapacity": max_cap,
+                "min_capacity": min_cap,
+                "minCapacity": min_cap,
+                "e_interval": e_val,
+                "verificationScaleIntervalE": e_val,
+                "d_interval": d_val,
+                "actualScaleIntervalD": d_val,
+                "unit": unit,
+                "tare_capacity": tare,
+                "tareCapacity": tare,
+                "type_approval_no": type_app,
+                "typeApprovalNo": type_app,
+                "year_of_manufacture": year,
+                "country_of_origin": country,
+                "status": "REGISTERED",
+                "owner_id": owner_id,
+                "created_at": now,
+                "updated_at": now
+            }
+            self.send_json({"success": True, "instrument_id": inst_id, "id": inst_id, "instrument": inst_obj, "message": "Instrument registered successfully"}, 201)
             return
 
         # 4. Evaluations CRUD: Create Evaluation (/api/evaluations)
@@ -1881,20 +1910,43 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
                 return
 
             now = datetime.datetime.now().isoformat()
-            model = body.get("model", inst["model"])
-            manufacturer = body.get("manufacturer", inst["manufacturer"])
-            type_approval = body.get("type_approval_no", inst["type_approval_no"])
-            max_capacity = float(body.get("max_capacity", inst["max_capacity"]))
-            min_capacity = float(body.get("min_capacity", inst["min_capacity"]))
-            e_interval = float(body.get("e_interval", inst["e_interval"]))
-            accuracy_class = body.get("accuracy_class", inst["accuracy_class"])
+            new_serial = (body.get("serial_number") or body.get("serialNumber") or inst["serial_number"]).strip()
+            if new_serial != inst["serial_number"]:
+                col = conn.execute("SELECT id FROM instruments WHERE serial_number = ? AND id != ?", (new_serial, inst_id)).fetchone()
+                if col:
+                    conn.close()
+                    self.send_error_json(f"Instrument with serial '{new_serial}' already exists", 409)
+                    return
+
+            model = body.get("model") or inst["model"]
+            manufacturer = body.get("manufacturer") or inst["manufacturer"]
+            type_approval = body.get("type_approval_no") or body.get("typeApprovalNo") or body.get("typeApprovalNumber") or inst["type_approval_no"]
+            max_capacity = float(body.get("max_capacity") or body.get("maxCapacity") or inst["max_capacity"])
+            min_capacity = float(body.get("min_capacity") or body.get("minCapacity") or inst["min_capacity"])
+            e_interval = float(body.get("e_interval") or body.get("verificationScaleIntervalE") or inst["e_interval"])
+            d_interval = float(body.get("d_interval") or body.get("actualScaleIntervalD") or inst["d_interval"])
+            accuracy_class = body.get("accuracy_class") or body.get("accuracyClass") or inst["accuracy_class"]
+            unit = body.get("unit") or inst["unit"]
+            tare_capacity = float(body.get("tare_capacity") or body.get("tareCapacity") or inst["tare_capacity"])
+            year = int(body.get("year_of_manufacture") or body.get("yearOfManufacture") or inst["year_of_manufacture"] or datetime.datetime.now().year)
+            country = body.get("country_of_origin") or body.get("countryOfOrigin") or inst["country_of_origin"]
+            status = body.get("status") or inst["status"]
+            owner_id = inst["owner_id"]
+            if user["role"] in ("ADMIN", "INSPECTOR") and body.get("owner_id"):
+                owner_id = body.get("owner_id")
 
             conn.execute("""
             UPDATE instruments SET
-                model = ?, manufacturer = ?, type_approval_no = ?, max_capacity = ?,
-                min_capacity = ?, e_interval = ?, accuracy_class = ?, updated_at = ?
+                serial_number = ?, model = ?, manufacturer = ?, type_approval_no = ?, max_capacity = ?,
+                min_capacity = ?, e_interval = ?, d_interval = ?, accuracy_class = ?, unit = ?,
+                tare_capacity = ?, year_of_manufacture = ?, country_of_origin = ?, status = ?,
+                owner_id = ?, updated_at = ?
             WHERE id = ?
-            """, (model, manufacturer, type_approval, max_capacity, min_capacity, e_interval, accuracy_class, now, inst_id))
+            """, (
+                new_serial, model, manufacturer, type_approval, max_capacity, min_capacity,
+                e_interval, d_interval, accuracy_class, unit, tare_capacity, year, country,
+                status, owner_id, now, inst_id
+            ))
             conn.commit()
             conn.close()
 
@@ -1904,16 +1956,45 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
                 "INSTRUMENT",
                 inst_id,
                 {
-                    "serial_number": inst["serial_number"],
+                    "serial_number": new_serial,
                     "model": model,
                     "manufacturer": manufacturer,
-                    "accuracy_class": accuracy_class
+                    "accuracy_class": accuracy_class,
+                    "max_capacity": max_capacity,
+                    "status": status
                 },
                 self.client_address[0],
                 user_role=user.get("role"),
                 user_name=user.get("full_name")
             )
-            self.send_json({"success": True, "message": "Instrument updated successfully"})
+            updated_obj = {
+                "id": inst_id,
+                "serial_number": new_serial,
+                "serialNumber": new_serial,
+                "model": model,
+                "manufacturer": manufacturer,
+                "accuracy_class": accuracy_class,
+                "accuracyClass": accuracy_class,
+                "max_capacity": max_capacity,
+                "maxCapacity": max_capacity,
+                "min_capacity": min_capacity,
+                "minCapacity": min_capacity,
+                "e_interval": e_interval,
+                "verificationScaleIntervalE": e_interval,
+                "d_interval": d_interval,
+                "actualScaleIntervalD": d_interval,
+                "unit": unit,
+                "tare_capacity": tare_capacity,
+                "tareCapacity": tare_capacity,
+                "type_approval_no": type_approval,
+                "typeApprovalNo": type_approval,
+                "year_of_manufacture": year,
+                "country_of_origin": country,
+                "status": status,
+                "owner_id": owner_id,
+                "updated_at": now
+            }
+            self.send_json({"success": True, "instrument_id": inst_id, "instrument": updated_obj, "message": "Instrument updated successfully"})
             return
 
         elif path.startswith("/api/evaluations/"):
@@ -2050,8 +2131,8 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
         if path.startswith("/api/instruments/"):
             inst_id = path.split("/")[3]
             user = self.get_auth_user()
-            if not user or user["role"] not in ("ADMIN", "OWNER"):
-                self.send_error_json("Unauthorized: Requires Admin or Owner role", 403)
+            if not user or user["role"] not in ("ADMIN", "OWNER", "INSPECTOR"):
+                self.send_error_json("Unauthorized: Requires Admin, Inspector, or Owner role", 403)
                 return
 
             conn = db.get_db()
@@ -2066,30 +2147,66 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
                 self.send_error_json("Access denied: Not your instrument", 403)
                 return
 
-            evals = conn.execute("SELECT id FROM evaluations WHERE instrument_id = ?", (inst_id,)).fetchall()
-            for ev_row in evals:
-                conn.execute("DELETE FROM test_readings WHERE evaluation_id = ?", (ev_row["id"],))
-                conn.execute("DELETE FROM attachments WHERE evaluation_id = ?", (ev_row["id"],))
-            conn.execute("DELETE FROM evaluations WHERE instrument_id = ?", (inst_id,))
-            conn.execute("DELETE FROM instruments WHERE id = ?", (inst_id,))
-            conn.commit()
-            conn.close()
+            # Check for linked evaluations or reports
+            eval_count = conn.execute("SELECT COUNT(*) FROM evaluations WHERE instrument_id = ?", (inst_id,)).fetchone()[0]
+            rep_count = conn.execute("SELECT COUNT(*) FROM reports WHERE instrument_id = ?", (inst_id,)).fetchone()[0]
 
-            db.log_audit(
-                user["sub"],
-                "DELETE_INSTRUMENT",
-                "INSTRUMENT",
-                inst_id,
-                {
-                    "serial_number": inst["serial_number"],
-                    "model": inst["model"]
-                },
-                self.client_address[0],
-                user_role=user.get("role"),
-                user_name=user.get("full_name")
-            )
-            self.send_json({"success": True, "message": "Instrument deleted"})
-            return
+            now = datetime.datetime.now().isoformat()
+            if eval_count > 0 or rep_count > 0:
+                # SAFE ARCHIVE: Preserve evaluations, reports, readings, and audit integrity
+                conn.execute("UPDATE instruments SET status = 'ARCHIVED', updated_at = ? WHERE id = ?", (now, inst_id))
+                conn.commit()
+                conn.close()
+
+                db.log_audit(
+                    user["sub"],
+                    "ARCHIVE_INSTRUMENT",
+                    "INSTRUMENT",
+                    inst_id,
+                    {
+                        "serial_number": inst["serial_number"],
+                        "model": inst["model"],
+                        "evaluations_count": eval_count,
+                        "reports_count": rep_count,
+                        "reason": "Preserving statutory evaluation and report records under Legal Metrology Act"
+                    },
+                    self.client_address[0],
+                    user_role=user.get("role"),
+                    user_name=user.get("full_name")
+                )
+                self.send_json({
+                    "success": True,
+                    "archived": True,
+                    "instrument_id": inst_id,
+                    "message": f"Instrument '{inst['serial_number']}' has {eval_count} evaluation(s) on file and has been safely archived to preserve legal records and referential integrity."
+                })
+                return
+            else:
+                # No linked records: clean deletion
+                conn.execute("DELETE FROM instruments WHERE id = ?", (inst_id,))
+                conn.commit()
+                conn.close()
+
+                db.log_audit(
+                    user["sub"],
+                    "DELETE_INSTRUMENT",
+                    "INSTRUMENT",
+                    inst_id,
+                    {
+                        "serial_number": inst["serial_number"],
+                        "model": inst["model"]
+                    },
+                    self.client_address[0],
+                    user_role=user.get("role"),
+                    user_name=user.get("full_name")
+                )
+                self.send_json({
+                    "success": True,
+                    "archived": False,
+                    "instrument_id": inst_id,
+                    "message": f"Instrument '{inst['serial_number']}' deleted successfully"
+                })
+                return
 
         elif path.startswith("/api/evaluations/"):
             eval_id = path.split("/")[3]

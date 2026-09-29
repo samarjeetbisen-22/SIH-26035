@@ -31,6 +31,11 @@ import {
   deleteEvaluation,
   fetchEvaluations,
   submitForReview,
+  fetchInstruments,
+  fetchInstrumentDetails,
+  createInstrument,
+  updateInstrument,
+  deleteInstrument,
   UserSession,
 } from "./utils/apiClient";
 import { LoginPage } from "./components/LoginPage";
@@ -91,6 +96,10 @@ export function App() {
   const [isSubmittingForReview, setIsSubmittingForReview] =
     useState<boolean>(false);
 
+  // Instrument CRUD State
+  const [savedInstruments, setSavedInstruments] = useState<any[]>([]);
+  const [isSavingInstrument, setIsSavingInstrument] = useState<boolean>(false);
+
   // Backend Integration & Modals State
   const [backendOnline, setBackendOnline] = useState<boolean>(false);
   const [isSavingAudit, setIsSavingAudit] = useState<boolean>(false);
@@ -123,6 +132,148 @@ export function App() {
     }
   };
 
+  // Instrument CRUD Operations
+  const loadSavedInstruments = async () => {
+    try {
+      const list = await fetchInstruments();
+      setSavedInstruments(list || []);
+      return list || [];
+    } catch (err) {
+      console.error("Failed to fetch instruments", err);
+      return [];
+    }
+  };
+
+  const handleSelectSavedInstrument = (inst: any) => {
+    const mapped: InstrumentProfile = {
+      id: inst.id,
+      manufacturer: inst.manufacturer || DEFAULT_INSTRUMENT.manufacturer,
+      model: inst.model || DEFAULT_INSTRUMENT.model,
+      serialNumber:
+        inst.serial_number || inst.serialNumber || DEFAULT_INSTRUMENT.serialNumber,
+      accuracyClass: (inst.accuracy_class ||
+        inst.accuracyClass ||
+        DEFAULT_INSTRUMENT.accuracyClass) as any,
+      maxCapacity:
+        Number(inst.max_capacity ?? inst.maxCapacity) ||
+        DEFAULT_INSTRUMENT.maxCapacity,
+      minCapacity:
+        Number(inst.min_capacity ?? inst.minCapacity) ||
+        DEFAULT_INSTRUMENT.minCapacity,
+      verificationScaleIntervalE:
+        Number(inst.e_interval ?? inst.verificationScaleIntervalE) ||
+        DEFAULT_INSTRUMENT.verificationScaleIntervalE,
+      actualScaleIntervalD:
+        Number(inst.d_interval ?? inst.actualScaleIntervalD) ||
+        DEFAULT_INSTRUMENT.actualScaleIntervalD,
+      tareCapacity:
+        Number(inst.tare_capacity ?? inst.tareCapacity) ||
+        DEFAULT_INSTRUMENT.tareCapacity,
+      unit: inst.unit || DEFAULT_INSTRUMENT.unit,
+      typeApprovalNo:
+        inst.type_approval_no ||
+        inst.typeApprovalNo ||
+        DEFAULT_INSTRUMENT.typeApprovalNo,
+      yearOfManufacture:
+        Number(inst.year_of_manufacture ?? inst.yearOfManufacture) ||
+        DEFAULT_INSTRUMENT.yearOfManufacture,
+      countryOfOrigin:
+        inst.country_of_origin ||
+        inst.countryOfOrigin ||
+        DEFAULT_INSTRUMENT.countryOfOrigin,
+      status: inst.status || "REGISTERED",
+      owner_id: inst.owner_id || "",
+      last_verified_at: inst.last_verified_at || "",
+      next_verification_due: inst.next_verification_due || "",
+    };
+    setInstrument(mapped);
+    localStorage.setItem("metrolab_current_inst_id", inst.id);
+    showToast(`Loaded scale ${mapped.serialNumber} (${mapped.model})`);
+  };
+
+  const handleSaveInstrument = async () => {
+    setIsSavingInstrument(true);
+    try {
+      if (instrument.id) {
+        // UPDATE existing instrument
+        const res = await updateInstrument(instrument.id, instrument);
+        if (res.success) {
+          showToast(`Scale ${instrument.serialNumber} updated successfully`);
+          const list = await loadSavedInstruments();
+          if (res.instrument) {
+            handleSelectSavedInstrument(res.instrument);
+          } else {
+            const found = list.find((s: any) => s.id === instrument.id);
+            if (found) handleSelectSavedInstrument(found);
+          }
+          checkBackend();
+        } else {
+          showToast(`Error updating scale: ${res.error || res.message || "Failed"}`);
+        }
+      } else {
+        // CREATE new instrument in SQLite
+        const res = await createInstrument(instrument);
+        if (res.success) {
+          const newId = res.instrument_id || res.id;
+          showToast(`Scale registered with ID: ${newId}`);
+          localStorage.setItem("metrolab_current_inst_id", newId);
+          setInstrument((prev) => ({
+            ...prev,
+            id: newId,
+            status: "REGISTERED",
+          }));
+          await loadSavedInstruments();
+          checkBackend();
+        } else {
+          showToast(`Error registering scale: ${res.error || res.message || "Failed"}`);
+        }
+      }
+    } catch (err: any) {
+      showToast(`Failed to save scale: ${err.message}`);
+    } finally {
+      setIsSavingInstrument(false);
+    }
+  };
+
+  const handleDeleteInstrument = async (instId: string) => {
+    if (
+      !window.confirm(
+        "Are you sure you want to delete or archive this scale? If it has linked evaluation records, it will be safely archived to protect statutory records.",
+      )
+    ) {
+      return;
+    }
+    try {
+      const res = await deleteInstrument(instId);
+      if (res.success) {
+        if (res.archived) {
+          showToast("Scale safely archived (evaluations preserved)");
+          setInstrument((prev) => ({ ...prev, status: "ARCHIVED" }));
+        } else {
+          showToast("Scale deleted successfully");
+          handleNewInstrument();
+        }
+        await loadSavedInstruments();
+        checkBackend();
+      } else {
+        showToast(`Error: ${res.error || res.message}`);
+      }
+    } catch (err: any) {
+      showToast(`Failed to delete scale: ${err.message}`);
+    }
+  };
+
+  const handleNewInstrument = () => {
+    setInstrument({
+      ...DEFAULT_INSTRUMENT,
+      id: undefined,
+      status: undefined,
+      serialNumber: `IND-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`,
+    });
+    localStorage.removeItem("metrolab_current_inst_id");
+    showToast("Started new scale specification form");
+  };
+
   // Load evaluation by ID from backend SQLite database
   const loadEvaluation = async (evalId: string) => {
     try {
@@ -137,6 +288,8 @@ export function App() {
 
         // Keep instrument linked properly
         setInstrument({
+          id: ev.instrument_id,
+          status: ev.status === "APPROVED" ? "VERIFIED" : "PENDING_VERIFICATION",
           manufacturer: ev.manufacturer || DEFAULT_INSTRUMENT.manufacturer,
           model: ev.model || DEFAULT_INSTRUMENT.model,
           serialNumber: ev.serial_number || DEFAULT_INSTRUMENT.serialNumber,
@@ -161,6 +314,9 @@ export function App() {
           countryOfOrigin:
             ev.country_of_origin || DEFAULT_INSTRUMENT.countryOfOrigin,
         });
+        if (ev.instrument_id) {
+          localStorage.setItem("metrolab_current_inst_id", ev.instrument_id);
+        }
 
         // Restore Test Conditions
         setConditions((prev) => ({
@@ -256,6 +412,21 @@ export function App() {
       loadEvaluation(currentEvaluationId);
     }
   }, [backendOnline, currentEvaluationId]);
+
+  // Load saved instruments from SQLite database on mount / auth change
+  useEffect(() => {
+    if (backendOnline) {
+      loadSavedInstruments().then((list) => {
+        const savedInstId = localStorage.getItem("metrolab_current_inst_id");
+        if (savedInstId && list && list.length > 0) {
+          const match = list.find((i: any) => i.id === savedInstId);
+          if (match && !currentEvaluationId) {
+            handleSelectSavedInstrument(match);
+          }
+        }
+      });
+    }
+  }, [backendOnline, currentUser]);
 
   // Live Metrological Calculations Engine
   const computation = useMemo(() => {
@@ -460,6 +631,7 @@ export function App() {
       } else {
         // CREATE new evaluation permanently
         const res = await createEvaluation({
+          instrument_id: instrument.id,
           instrument,
           serial_number: instrument.serialNumber,
           test_date:
@@ -478,6 +650,10 @@ export function App() {
         if (res.success && res.evaluation_id) {
           setCurrentEvaluationId(res.evaluation_id);
           setEvaluationStatus(res.status || "DRAFT");
+          if (res.instrument_id && !instrument.id) {
+            setInstrument((prev) => ({ ...prev, id: res.instrument_id }));
+            localStorage.setItem("metrolab_current_inst_id", res.instrument_id);
+          }
           localStorage.setItem("metrolab_current_eval_id", res.evaluation_id);
           showToast(
             `Created & permanently saved evaluation ${res.evaluation_id}`,
@@ -817,6 +993,12 @@ export function App() {
               );
             }}
             onSelectPreset={handleSelectPreset}
+            savedInstruments={savedInstruments}
+            onSelectSavedInstrument={handleSelectSavedInstrument}
+            onSaveInstrument={handleSaveInstrument}
+            onDeleteInstrument={handleDeleteInstrument}
+            onNewInstrument={handleNewInstrument}
+            isSavingInstrument={isSavingInstrument}
           />
         )}
 

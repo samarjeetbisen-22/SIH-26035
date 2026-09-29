@@ -126,10 +126,17 @@ export async function fetchDashboardStats() {
   }
 }
 
-export async function fetchInstruments() {
+export async function fetchInstruments(params?: { q?: string; status?: string; class?: string; include_archived?: boolean }) {
   const token = getAuthToken();
   try {
-    const res = await fetch(`${API_BASE}/instruments`, {
+    const query = new URLSearchParams();
+    if (params?.q) query.append("q", params.q);
+    if (params?.status) query.append("status", params.status);
+    if (params?.class) query.append("class", params.class);
+    if (params?.include_archived) query.append("include_archived", "1");
+    const qs = query.toString();
+    const url = qs ? `${API_BASE}/instruments?${qs}` : `${API_BASE}/instruments`;
+    const res = await fetch(url, {
       headers: token ? { Authorization: `Bearer ${token}` } : {}
     });
     if (!res.ok) return [];
@@ -137,6 +144,66 @@ export async function fetchInstruments() {
     return data.instruments || [];
   } catch {
     return [];
+  }
+}
+
+export async function fetchInstrumentDetails(instId: string) {
+  const token = getAuthToken();
+  try {
+    const res = await fetch(`${API_BASE}/instruments/${instId}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {}
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function createInstrument(payload: any) {
+  const token = getAuthToken();
+  try {
+    const res = await fetch(`${API_BASE}/instruments`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {})
+      },
+      body: JSON.stringify(payload)
+    });
+    return await res.json();
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+}
+
+export async function updateInstrument(instId: string, payload: any) {
+  const token = getAuthToken();
+  try {
+    const res = await fetch(`${API_BASE}/instruments/${instId}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {})
+      },
+      body: JSON.stringify(payload)
+    });
+    return await res.json();
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+}
+
+export async function deleteInstrument(instId: string) {
+  const token = getAuthToken();
+  try {
+    const res = await fetch(`${API_BASE}/instruments/${instId}`, {
+      method: 'DELETE',
+      headers: token ? { Authorization: `Bearer ${token}` } : {}
+    });
+    return await res.json();
+  } catch (err: any) {
+    return { success: false, error: err.message };
   }
 }
 

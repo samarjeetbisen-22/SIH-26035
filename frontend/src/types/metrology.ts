@@ -18,6 +18,11 @@ export interface InstrumentProfile {
   yearOfManufacture: number;
   countryOfOrigin: string;
   tareCapacity: number;
+  id?: string;
+  status?: string;
+  owner_id?: string;
+  last_verified_at?: string;
+  next_verification_due?: string;
 }
 
 export interface TestConditions {
