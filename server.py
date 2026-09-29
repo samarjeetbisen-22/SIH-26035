@@ -577,24 +577,70 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
                 self.wfile.write(f.read())
             return
 
-        # 10. Audit Logs List (/api/audit_logs, /api/audit) - Admin & Reviewer Only
+        # 10. Audit Logs List (/api/audit_logs, /api/audit)
         elif path in ("/api/audit_logs", "/api/audit"):
             user = self.get_auth_user()
-            if not user or user["role"] not in ("ADMIN", "REVIEWER"):
-                self.send_error_json("Access forbidden: Requires Admin or Reviewer role", 403)
+            if not user:
+                self.send_error_json("Unauthorized: Authentication required", 401)
                 return
 
             conn = db.get_db()
-            logs = conn.execute("""
-            SELECT a.*, u.username, u.full_name, u.role
+            limit = 200
+            if "limit" in query:
+                try:
+                    limit = int(query["limit"][0])
+                except Exception:
+                    limit = 200
+
+            action_filter = query.get("action", [""])[0].strip()
+            entity_type_filter = query.get("entity_type", [""])[0].strip()
+            entity_id_filter = query.get("entity_id", [""])[0].strip()
+
+            sql = """
+            SELECT a.*,
+                   COALESCE(a.user_name, u.full_name, u.username, 'System') as user_name,
+                   COALESCE(a.user_role, u.role, 'SYSTEM') as user_role,
+                   u.username, u.organization
             FROM audit_logs a
             LEFT JOIN users u ON a.user_id = u.id
-            ORDER BY a.timestamp DESC
-            LIMIT 100
-            """).fetchall()
+            WHERE 1=1
+            """
+            params = []
+            if action_filter:
+                sql += " AND a.action = ?"
+                params.append(action_filter)
+            if entity_type_filter:
+                sql += " AND a.entity_type = ?"
+                params.append(entity_type_filter)
+            if entity_id_filter:
+                sql += " AND a.entity_id = ?"
+                params.append(entity_id_filter)
+
+            if user["role"] == "OWNER":
+                # Owner sees logs for their user or their owned instruments/evaluations
+                sql += """ AND (
+                    a.user_id = ?
+                    OR a.entity_id IN (SELECT id FROM instruments WHERE owner_id = ?)
+                    OR a.entity_id IN (SELECT id FROM evaluations WHERE instrument_id IN (SELECT id FROM instruments WHERE owner_id = ?))
+                    OR a.details_json LIKE ?
+                )"""
+                params.extend([user["sub"], user["sub"], user["sub"], f"%{user['sub']}%"])
+
+            sql += " ORDER BY a.timestamp DESC LIMIT ?"
+            params.append(limit)
+
+            logs = conn.execute(sql, tuple(params)).fetchall()
             conn.close()
 
-            logs_list = [dict(l) for l in logs]
+            logs_list = []
+            for l in logs:
+                item = dict(l)
+                try:
+                    item["details"] = json.loads(item["details_json"]) if item["details_json"] else {}
+                except Exception:
+                    item["details"] = {}
+                logs_list.append(item)
+
             self.send_json({"audit_logs": logs_list, "logs": logs_list})
             return
 
@@ -657,13 +703,14 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
                 return
 
             conn = db.get_db()
-            user = conn.execute("SELECT * FROM users WHERE username = ? AND is_active = 1", (username,)).fetchone()
+            user_row = conn.execute("SELECT * FROM users WHERE username = ? AND is_active = 1", (username,)).fetchone()
             conn.close()
 
-            if not user or not db.verify_password(password, user["salt"], user["password_hash"]):
+            if not user_row or not db.verify_password(password, user_row["salt"], user_row["password_hash"]):
                 self.send_error_json("Invalid credentials", 401)
                 return
 
+            user = dict(user_row)
             token = auth.create_jwt_token({
                 "sub": user["id"],
                 "username": user["username"],
@@ -672,7 +719,22 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
                 "org": user["organization"]
             })
 
-            db.log_audit(user["id"], "LOGIN", "USER", user["id"], {"role": user["role"]}, self.client_address[0])
+            db.log_audit(
+                user["id"],
+                "LOGIN",
+                "USER",
+                user["id"],
+                {
+                    "username": user["username"],
+                    "role": user["role"],
+                    "full_name": user["full_name"],
+                    "organization": user["organization"],
+                    "badge_id": user.get("badge_id", "")
+                },
+                self.client_address[0],
+                user_role=user["role"],
+                user_name=user["full_name"]
+            )
 
             self.send_json({
                 "success": True,
@@ -693,7 +755,20 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
         elif path == "/api/auth/logout":
             user = self.get_auth_user()
             if user:
-                db.log_audit(user["sub"], "LOGOUT", "USER", user["sub"], {}, self.client_address[0])
+                db.log_audit(
+                    user["sub"],
+                    "LOGOUT",
+                    "USER",
+                    user["sub"],
+                    {
+                        "username": user.get("username", ""),
+                        "role": user.get("role", ""),
+                        "full_name": user.get("full_name", "")
+                    },
+                    self.client_address[0],
+                    user_role=user.get("role"),
+                    user_name=user.get("full_name")
+                )
             self.send_json({"success": True, "message": "Logged out successfully"})
             return
 
@@ -746,7 +821,26 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
             conn.commit()
             conn.close()
 
-            db.log_audit(user["sub"], "CREATE", "INSTRUMENT", inst_id, {"serial": serial, "model": model}, self.client_address[0])
+            db.log_audit(
+                user["sub"],
+                "CREATE_INSTRUMENT",
+                "INSTRUMENT",
+                inst_id,
+                {
+                    "serial_number": serial,
+                    "model": model,
+                    "manufacturer": manufacturer,
+                    "accuracy_class": accuracy_class,
+                    "max_capacity": max_cap,
+                    "min_capacity": min_cap,
+                    "unit": unit,
+                    "status": "REGISTERED",
+                    "owner_id": owner_id
+                },
+                self.client_address[0],
+                user_role=user.get("role"),
+                user_name=user.get("full_name")
+            )
             self.send_json({"success": True, "instrument_id": inst_id, "message": "Instrument registered successfully"}, 201)
             return
 
@@ -804,6 +898,23 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
                             inst_info.get("typeApprovalNumber", ""),
                             owner_id, now_inst, now_inst
                         ))
+                        conn.commit()
+                        db.log_audit(
+                            user["sub"],
+                            "CREATE_INSTRUMENT",
+                            "INSTRUMENT",
+                            instrument_id,
+                            {
+                                "serial_number": sn,
+                                "model": inst_info.get("model", "NAWI Device"),
+                                "manufacturer": inst_info.get("manufacturer", "Manufacturer"),
+                                "status": "PENDING_VERIFICATION",
+                                "owner_id": owner_id
+                            },
+                            self.client_address[0],
+                            user_role=user.get("role"),
+                            user_name=user.get("full_name")
+                        )
 
             if not instrument_id:
                 conn.close()
@@ -859,6 +970,7 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
                     pos = pt.get("position", "center")
                     if pos not in ('center', 'front-left', 'front-right', 'back-left', 'back-right'):
                         pos = 'center'
+                    direction = 'increasing' if str(pt.get("direction", "increasing")).lower() in ('increasing', 'up', 'ascending') else 'decreasing'
                     conn.execute("""
                     INSERT INTO test_readings (
                         id, evaluation_id, test_type, load_val, reading, error, mpe, ratio, passed,
@@ -867,7 +979,7 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
                     """, (
                         rd_id, eval_id, test_type, pt["load"], pt["reading"], pt["error"],
                         pt["mpe"], pt["ratio"], 1 if pt["passed"] else 0,
-                        pt["direction"], pos, pt["repeat_number"], now
+                        direction, pos, pt["repeat_number"], now
                     ))
                 conn.execute("""
                 UPDATE evaluations SET
@@ -886,7 +998,41 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
             conn.commit()
             conn.close()
 
-            db.log_audit(user["sub"], "CREATE", "EVALUATION", eval_id, {"instrument": inst["serial_number"], "status": status}, self.client_address[0])
+            db.log_audit(
+                user["sub"],
+                "CREATE_EVALUATION",
+                "EVALUATION",
+                eval_id,
+                {
+                    "instrument_id": instrument_id,
+                    "serial_number": inst["serial_number"],
+                    "model": inst["model"],
+                    "status": status,
+                    "test_location": test_location,
+                    "test_date": test_date
+                },
+                self.client_address[0],
+                user_role=user.get("role"),
+                user_name=user.get("full_name")
+            )
+            if readings_list and isinstance(readings_list, list):
+                db.log_audit(
+                    user["sub"],
+                    "SUBMIT_TEST_READINGS",
+                    "EVALUATION",
+                    eval_id,
+                    {
+                        "instrument_id": instrument_id,
+                        "serial_number": inst["serial_number"],
+                        "readings_count": len(results["point_results"]),
+                        "compliance_score": results["compliance_score"],
+                        "conformity": results["conformity"],
+                        "status": status
+                    },
+                    self.client_address[0],
+                    user_role=user.get("role"),
+                    user_name=user.get("full_name")
+                )
             self.send_json({"success": True, "evaluation_id": eval_id, "message": "Evaluation created successfully", "status": status}, 201)
             return
 
@@ -936,6 +1082,7 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
                 pos = pt.get("position", "center")
                 if pos not in ('center', 'front-left', 'front-right', 'back-left', 'back-right'):
                     pos = 'center'
+                direction = 'increasing' if str(pt.get("direction", "increasing")).lower() in ('increasing', 'up', 'ascending') else 'decreasing'
                 conn.execute("""
                 INSERT INTO test_readings (
                     id, evaluation_id, test_type, load_val, reading, error, mpe, ratio, passed,
@@ -944,7 +1091,7 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
                 """, (
                     rd_id, eval_id, test_type, pt["load"], pt["reading"], pt["error"],
                     pt["mpe"], pt["ratio"], 1 if pt["passed"] else 0,
-                    pt["direction"], pos, pt["repeat_number"], now
+                    direction, pos, pt["repeat_number"], now
                 ))
 
             conn.execute("""
@@ -978,11 +1125,24 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
             conn.commit()
             conn.close()
 
-            db.log_audit(user["sub"], "BATCH_INSERT", "EVALUATION", eval_id, {
-                "points_count": len(results["point_results"]),
-                "compliance_score": results["compliance_score"],
-                "conformity": results["conformity"]
-            }, self.client_address[0])
+            db.log_audit(
+                user["sub"],
+                "SUBMIT_TEST_READINGS",
+                "EVALUATION",
+                eval_id,
+                {
+                    "instrument_id": ev["instrument_id"],
+                    "serial_number": ev["serial_number"],
+                    "readings_count": len(results["point_results"]),
+                    "points_count": len(results["point_results"]),
+                    "compliance_score": results["compliance_score"],
+                    "conformity": results["conformity"],
+                    "status": ev["status"]
+                },
+                self.client_address[0],
+                user_role=user.get("role"),
+                user_name=user.get("full_name")
+            )
 
             self.send_json({
                 "success": True,
@@ -1061,10 +1221,21 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
             conn.commit()
             conn.close()
 
-            db.log_audit(user["sub"], "CALCULATE", "EVALUATION", eval_id, {
-                "compliance_score": results["compliance_score"],
-                "conformity": results["conformity"]
-            }, self.client_address[0])
+            db.log_audit(
+                user["sub"],
+                "CALCULATE",
+                "EVALUATION",
+                eval_id,
+                {
+                    "instrument_id": ev["instrument_id"],
+                    "serial_number": ev["serial_number"],
+                    "compliance_score": results["compliance_score"],
+                    "conformity": results["conformity"]
+                },
+                self.client_address[0],
+                user_role=user.get("role"),
+                user_name=user.get("full_name")
+            )
 
             self.send_json({
                 "success": True,
@@ -1106,7 +1277,21 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
             conn.close()
 
             action_name = "RESUBMIT_FOR_REVIEW" if ev["status"] in ("REJECTED", "RETURNED") else "SUBMIT_FOR_REVIEW"
-            db.log_audit(user["sub"], action_name, "EVALUATION", eval_id, {"previous_status": ev["status"]}, self.client_address[0])
+            db.log_audit(
+                user["sub"],
+                action_name,
+                "EVALUATION",
+                eval_id,
+                {
+                    "instrument_id": ev["instrument_id"],
+                    "previous_status": ev["status"],
+                    "new_status": "SUBMITTED",
+                    "readings_count": readings_count
+                },
+                self.client_address[0],
+                user_role=user.get("role"),
+                user_name=user.get("full_name")
+            )
             self.send_json({"success": True, "status": "SUBMITTED", "message": "Evaluation submitted to Reviewer queue"})
             return
 
@@ -1136,7 +1321,20 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
                 """, (user["sub"], now, eval_id))
                 conn.commit()
                 conn.close()
-                db.log_audit(user["sub"], "REVIEW_INSPECT", "EVALUATION", eval_id, {"status": "UNDER_REVIEW"}, self.client_address[0])
+                db.log_audit(
+                    user["sub"],
+                    "REVIEW_INSPECT",
+                    "EVALUATION",
+                    eval_id,
+                    {
+                        "status": "UNDER_REVIEW",
+                        "instrument_id": ev["instrument_id"],
+                        "serial_number": ev["serial_number"]
+                    },
+                    self.client_address[0],
+                    user_role=user.get("role"),
+                    user_name=user.get("full_name")
+                )
                 self.send_json({"success": True, "status": "UNDER_REVIEW", "message": "Evaluation marked as under review"})
                 return
 
@@ -1162,7 +1360,22 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
                 conn.commit()
                 conn.close()
 
-                db.log_audit(user["sub"], "REVIEW_APPROVE", "EVALUATION", eval_id, {"certificate_number": cert_no, "comments": comments}, self.client_address[0])
+                db.log_audit(
+                    user["sub"],
+                    "REVIEW_APPROVE",
+                    "EVALUATION",
+                    eval_id,
+                    {
+                        "status": "APPROVED",
+                        "certificate_number": cert_no,
+                        "comments": comments or "Approved",
+                        "instrument_id": ev["instrument_id"],
+                        "serial_number": ev["serial_number"]
+                    },
+                    self.client_address[0],
+                    user_role=user.get("role"),
+                    user_name=user.get("full_name")
+                )
                 self.send_json({"success": True, "verdict": "APPROVED", "status": "APPROVED", "certificate_number": cert_no, "message": "Evaluation approved successfully"})
                 return
 
@@ -1187,7 +1400,21 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
                 conn.close()
 
                 audit_act = "REVIEW_RETURN" if new_status == "RETURNED" else "REVIEW_REJECT"
-                db.log_audit(user["sub"], audit_act, "EVALUATION", eval_id, {"status": new_status, "comments": comments}, self.client_address[0])
+                db.log_audit(
+                    user["sub"],
+                    audit_act,
+                    "EVALUATION",
+                    eval_id,
+                    {
+                        "status": new_status,
+                        "comments": comments,
+                        "instrument_id": ev["instrument_id"],
+                        "serial_number": ev["serial_number"]
+                    },
+                    self.client_address[0],
+                    user_role=user.get("role"),
+                    user_name=user.get("full_name")
+                )
                 self.send_json({"success": True, "verdict": new_status, "status": new_status, "message": f"Evaluation returned for correction ({new_status})"})
                 return
 
@@ -1335,12 +1562,22 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
             conn.commit()
             conn.close()
 
-            db.log_audit(user["sub"], "UPLOAD_ATTACHMENT", "ATTACHMENT", att_id, {
-                "filename": original_name,
-                "file_size": len(file_bytes),
-                "eval_id": eval_id,
-                "instrument_id": instrument_id
-            }, self.client_address[0])
+            db.log_audit(
+                user["sub"],
+                "UPLOAD_ATTACHMENT",
+                "ATTACHMENT",
+                att_id,
+                {
+                    "filename": original_name,
+                    "file_size": len(file_bytes),
+                    "mime_type": mime_type,
+                    "evaluation_id": ev["id"] if ev else None,
+                    "instrument_id": instrument_id
+                },
+                self.client_address[0],
+                user_role=user.get("role"),
+                user_name=user.get("full_name")
+            )
 
             self.send_json({
                 "success": True,
@@ -1491,13 +1728,24 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
                 conn.commit()
                 conn.close()
 
-                db.log_audit(user["sub"], "GENERATE_REPORT", "REPORT", report_id, {
-                    "evaluation_id": eval_id,
-                    "instrument_id": ev["instrument_id"],
-                    "serial_number": ev["serial_number"],
-                    "certificate_number": cert_no,
-                    "pdf": pdf_filename
-                }, self.client_address[0])
+                db.log_audit(
+                    user["sub"],
+                    "GENERATE_REPORT",
+                    "REPORT",
+                    report_id,
+                    {
+                        "evaluation_id": eval_id,
+                        "instrument_id": ev["instrument_id"],
+                        "serial_number": ev["serial_number"],
+                        "certificate_number": cert_no,
+                        "pdf": pdf_filename,
+                        "pdf_url": pdf_url,
+                        "status": "ISSUED"
+                    },
+                    self.client_address[0],
+                    user_role=user.get("role"),
+                    user_name=user.get("full_name")
+                )
 
                 self.send_json({
                     "success": True,
@@ -1609,6 +1857,10 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
         path = parsed.path
         body = self.parse_json_body()
 
+        if path.startswith("/api/audit"):
+            self.send_error_json("Access forbidden: Audit records are legally immutable under the Legal Metrology Act and cannot be modified or deleted.", 403)
+            return
+
         if path.startswith("/api/instruments/"):
             inst_id = path.split("/")[3]
             user = self.get_auth_user()
@@ -1646,7 +1898,21 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
             conn.commit()
             conn.close()
 
-            db.log_audit(user["sub"], "UPDATE", "INSTRUMENT", inst_id, {"model": model}, self.client_address[0])
+            db.log_audit(
+                user["sub"],
+                "UPDATE_INSTRUMENT",
+                "INSTRUMENT",
+                inst_id,
+                {
+                    "serial_number": inst["serial_number"],
+                    "model": model,
+                    "manufacturer": manufacturer,
+                    "accuracy_class": accuracy_class
+                },
+                self.client_address[0],
+                user_role=user.get("role"),
+                user_name=user.get("full_name")
+            )
             self.send_json({"success": True, "message": "Instrument updated successfully"})
             return
 
@@ -1723,6 +1989,7 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
                     pos = pt.get("position", "center")
                     if pos not in ('center', 'front-left', 'front-right', 'back-left', 'back-right'):
                         pos = 'center'
+                    direction = 'increasing' if str(pt.get("direction", "increasing")).lower() in ('increasing', 'up', 'ascending') else 'decreasing'
                     conn.execute("""
                     INSERT INTO test_readings (
                         id, evaluation_id, test_type, load_val, reading, error, mpe, ratio, passed,
@@ -1731,7 +1998,7 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
                     """, (
                         rd_id, eval_id, test_type, pt["load"], pt["reading"], pt["error"],
                         pt["mpe"], pt["ratio"], 1 if pt["passed"] else 0,
-                        pt["direction"], pos, pt["repeat_number"], now
+                        direction, pos, pt["repeat_number"], now
                     ))
                 conn.execute("""
                 UPDATE evaluations SET
@@ -1749,7 +2016,20 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
             conn.commit()
             conn.close()
 
-            db.log_audit(user["sub"], "UPDATE", "EVALUATION", eval_id, {"status": status}, self.client_address[0])
+            db.log_audit(
+                user["sub"],
+                "UPDATE_EVALUATION",
+                "EVALUATION",
+                eval_id,
+                {
+                    "instrument_id": instrument_id,
+                    "previous_status": ev["status"],
+                    "status": status
+                },
+                self.client_address[0],
+                user_role=user.get("role"),
+                user_name=user.get("full_name")
+            )
             self.send_json({"success": True, "message": "Evaluation updated permanently", "evaluation_id": eval_id, "status": status})
             return
 
@@ -1762,6 +2042,10 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+
+        if path.startswith("/api/audit"):
+            self.send_error_json("Access forbidden: Audit records are legally immutable under the Legal Metrology Act and cannot be modified or deleted.", 403)
+            return
 
         if path.startswith("/api/instruments/"):
             inst_id = path.split("/")[3]
@@ -1791,7 +2075,19 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
             conn.commit()
             conn.close()
 
-            db.log_audit(user["sub"], "DELETE", "INSTRUMENT", inst_id, {"serial": inst["serial_number"]}, self.client_address[0])
+            db.log_audit(
+                user["sub"],
+                "DELETE_INSTRUMENT",
+                "INSTRUMENT",
+                inst_id,
+                {
+                    "serial_number": inst["serial_number"],
+                    "model": inst["model"]
+                },
+                self.client_address[0],
+                user_role=user.get("role"),
+                user_name=user.get("full_name")
+            )
             self.send_json({"success": True, "message": "Instrument deleted"})
             return
 
@@ -1818,7 +2114,19 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
             conn.commit()
             conn.close()
 
-            db.log_audit(user["sub"], "DELETE", "EVALUATION", eval_id, {}, self.client_address[0])
+            db.log_audit(
+                user["sub"],
+                "DELETE_EVALUATION",
+                "EVALUATION",
+                eval_id,
+                {
+                    "instrument_id": ev["instrument_id"],
+                    "status": ev["status"]
+                },
+                self.client_address[0],
+                user_role=user.get("role"),
+                user_name=user.get("full_name")
+            )
             self.send_json({"success": True, "message": "Evaluation deleted"})
             return
 
@@ -1849,7 +2157,20 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
             conn.commit()
             conn.close()
 
-            db.log_audit(user["sub"], "DELETE", "ATTACHMENT", att_id, {"filename": att["original_name"]}, self.client_address[0])
+            db.log_audit(
+                user["sub"],
+                "DELETE_ATTACHMENT",
+                "ATTACHMENT",
+                att_id,
+                {
+                    "filename": att["original_name"],
+                    "evaluation_id": att["evaluation_id"],
+                    "instrument_id": att["instrument_id"]
+                },
+                self.client_address[0],
+                user_role=user.get("role"),
+                user_name=user.get("full_name")
+            )
             self.send_json({"success": True, "message": "Attachment deleted successfully"})
             return
 

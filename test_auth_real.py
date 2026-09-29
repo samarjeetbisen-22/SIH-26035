@@ -185,7 +185,7 @@ def run_all_tests():
 
     # C. Unauthenticated /api/audit
     s3, r3 = get_json(f"{base}/api/audit")
-    assert s3 == 403, f"Expected 403 for /api/audit without token, got {s3}"
+    assert s3 in (401, 403), f"Expected 401 or 403 for /api/audit without token, got {s3}"
     print(f"  [PASS] Protected /api/audit blocked without token -> HTTP {s3} ({r3.get('error')})")
 
     # D. Technician attempting to access Admin-only /api/auth/users

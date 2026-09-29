@@ -21,9 +21,11 @@ os.makedirs(UPLOADS_DIR, exist_ok=True)
 os.makedirs(REPORTS_DIR, exist_ok=True)
 
 def get_db():
-    conn = sqlite3.connect(DB_PATH, timeout=20.0)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 30000")
     return conn
 
 def hash_password(password: str, salt: str = None) -> tuple:
@@ -175,6 +177,8 @@ def init_db():
         details_json TEXT,
         ip_address TEXT,
         timestamp TEXT NOT NULL,
+        user_role TEXT,
+        user_name TEXT,
         FOREIGN KEY (user_id) REFERENCES users(id)
     )
     ''')
@@ -217,6 +221,16 @@ def init_db():
     ]:
         if col_name not in existing_rep_cols:
             c.execute(f"ALTER TABLE reports ADD COLUMN {col_name} {col_type}")
+
+    # Add missing columns to audit_logs table if they do not exist
+    c.execute("PRAGMA table_info(audit_logs)")
+    existing_aud_cols = {col[1] for col in c.fetchall()}
+    for col_name, col_type in [
+        ("user_role", "TEXT"),
+        ("user_name", "TEXT"),
+    ]:
+        if col_name not in existing_aud_cols:
+            c.execute(f"ALTER TABLE audit_logs ADD COLUMN {col_name} {col_type}")
 
     conn.commit()
 
@@ -269,13 +283,27 @@ def init_db():
 
     conn.close()
 
-def log_audit(user_id: str, action: str, entity_type: str, entity_id: str = None, details: dict = None, ip_address: str = "127.0.0.1"):
+def log_audit(user_id: str, action: str, entity_type: str, entity_id: str = None, details: dict = None, ip_address: str = "127.0.0.1", user_role: str = None, user_name: str = None):
     try:
         conn = get_db()
         log_id = f"aud_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(4)}"
+
+        # Automatically resolve user_role and user_name if missing
+        if user_id and (not user_role or not user_name):
+            try:
+                urow = conn.execute("SELECT full_name, username, role FROM users WHERE id = ?", (user_id,)).fetchone()
+                if urow:
+                    user_role = user_role or urow["role"]
+                    user_name = user_name or urow["full_name"] or urow["username"]
+            except Exception:
+                pass
+
+        user_role = user_role or "SYSTEM"
+        user_name = user_name or "System Administrator"
+
         conn.execute('''
-        INSERT INTO audit_logs (id, user_id, action, entity_type, entity_id, details_json, ip_address, timestamp)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO audit_logs (id, user_id, action, entity_type, entity_id, details_json, ip_address, timestamp, user_role, user_name)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             log_id,
             user_id,
@@ -284,7 +312,9 @@ def log_audit(user_id: str, action: str, entity_type: str, entity_id: str = None
             entity_id,
             json.dumps(details or {}, default=str),
             ip_address,
-            datetime.datetime.now().isoformat()
+            datetime.datetime.now().isoformat(),
+            user_role,
+            user_name
         ))
         conn.commit()
         conn.close()

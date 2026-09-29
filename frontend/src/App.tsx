@@ -18,6 +18,7 @@ import {
   generateReportLabPdf,
   generateEvaluationPdf,
   fetchAuditHistory,
+  fetchAuditLogs,
   getAuthUser,
   setAuthUser,
   loginUser,
@@ -101,6 +102,7 @@ export function App() {
   const [isAttachmentModalOpen, setIsAttachmentModalOpen] =
     useState<boolean>(false);
   const [auditRecords, setAuditRecords] = useState<AuditHistoryRecord[]>([]);
+  const [auditLogs, setAuditLogs] = useState<any[]>([]);
   const [isLoadingAudit, setIsLoadingAudit] = useState<boolean>(false);
   const [dashboardStats, setDashboardStats] = useState<any | null>(null);
 
@@ -567,13 +569,19 @@ export function App() {
     }
   };
 
-  // Backend: Fetch SQLite Audit History
+  // Backend: Fetch SQLite Audit History & System Activity Logs
   const handleOpenAuditHistory = async () => {
     setIsAuditModalOpen(true);
     setIsLoadingAudit(true);
     try {
-      const records = await fetchAuditHistory();
+      const [records, logs] = await Promise.all([
+        fetchAuditHistory(),
+        fetchAuditLogs(),
+      ]);
       setAuditRecords(records);
+      setAuditLogs(logs);
+    } catch (e) {
+      console.error("Failed to load audit history:", e);
     } finally {
       setIsLoadingAudit(false);
     }
@@ -885,6 +893,7 @@ export function App() {
         isOpen={isAuditModalOpen}
         onClose={() => setIsAuditModalOpen(false)}
         records={auditRecords}
+        auditLogs={auditLogs}
         isLoading={isLoadingAudit}
         onRefresh={handleOpenAuditHistory}
         onSelectEvaluation={(evalId) => {
