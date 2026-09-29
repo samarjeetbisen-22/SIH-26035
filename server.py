@@ -41,6 +41,9 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
         self.end_headers()
 
     def do_OPTIONS(self):
@@ -48,6 +51,9 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
         self.end_headers()
 
     def get_auth_user(self):
@@ -69,14 +75,20 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
         return payload
 
     def parse_json_body(self):
-        content_length = int(self.headers.get("Content-Length", 0))
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+        except (ValueError, TypeError):
+            return None
         if content_length == 0:
             return {}
-        raw = self.rfile.read(content_length)
+        # Max request payload limit of 15 MB to prevent memory exhaustion DoS
+        if content_length > 15 * 1024 * 1024:
+            return None
         try:
+            raw = self.rfile.read(content_length)
             return json.loads(raw.decode("utf-8"))
         except Exception:
-            return {}
+            return None
 
     def send_json(self, data, status=200):
         self._set_cors_headers(status=status)
@@ -90,6 +102,13 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
     # HTTP GET HANDLER
     # =========================================================================
     def do_GET(self):
+        try:
+            self._handle_GET()
+        except Exception as e:
+            sys.stderr.write(f"[SECURITY/ERROR] Unhandled GET exception: {type(e).__name__}: {e}\n")
+            self.send_error_json("An internal server error occurred", 500)
+
+    def _handle_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
@@ -139,9 +158,13 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
         # 4. Live Dashboard Stats (/api/dashboard/stats)
         elif path == "/api/dashboard/stats":
             user = self.get_auth_user()
+            if not user:
+                self.send_error_json("Unauthorized: Authentication required", 401)
+                return
+
             conn = db.get_db()
-            owner_filter = " WHERE owner_id = ?" if user and user["role"] == "OWNER" else ""
-            params = (user["sub"],) if user and user["role"] == "OWNER" else ()
+            owner_filter = " WHERE owner_id = ?" if user["role"] == "OWNER" else ""
+            params = (user["sub"],) if user["role"] == "OWNER" else ()
 
             total_instruments = conn.execute(f"SELECT COUNT(*) FROM instruments{owner_filter}", params).fetchone()[0]
             classes_breakdown = dict(conn.execute(f"SELECT accuracy_class, COUNT(*) FROM instruments{owner_filter} GROUP BY accuracy_class", params).fetchall())
@@ -153,7 +176,7 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
             JOIN instruments i ON e.instrument_id = i.id
             """
             eval_params = ()
-            if user and user["role"] == "OWNER":
+            if user["role"] == "OWNER":
                 eval_query += " WHERE i.owner_id = ?"
                 eval_params = (user["sub"],)
 
@@ -180,17 +203,29 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
             WHERE next_verification_due <= ? AND next_verification_due >= ?
             """
             exp_params = [in_30_days, today_str]
-            if user and user["role"] == "OWNER":
+            if user["role"] == "OWNER":
                 expiring_soon_query += " AND owner_id = ?"
                 exp_params.append(user["sub"])
             expiring_count = conn.execute(expiring_soon_query, tuple(exp_params)).fetchone()[0]
 
-            recent_logs = conn.execute("""
-            SELECT a.id, a.action, a.entity_type, a.entity_id, a.timestamp, u.full_name as user_name, u.role as user_role
-            FROM audit_logs a
-            LEFT JOIN users u ON a.user_id = u.id
-            ORDER BY a.timestamp DESC LIMIT 10
-            """).fetchall()
+            if user["role"] == "OWNER":
+                recent_logs = conn.execute("""
+                SELECT a.id, a.action, a.entity_type, a.entity_id, a.timestamp, u.full_name as user_name, u.role as user_role
+                FROM audit_logs a
+                LEFT JOIN users u ON a.user_id = u.id
+                WHERE a.user_id = ?
+                   OR a.entity_id IN (SELECT id FROM instruments WHERE owner_id = ?)
+                   OR a.entity_id IN (SELECT id FROM evaluations WHERE instrument_id IN (SELECT id FROM instruments WHERE owner_id = ?))
+                   OR a.details_json LIKE ?
+                ORDER BY a.timestamp DESC LIMIT 10
+                """, (user["sub"], user["sub"], user["sub"], f"%{user['sub']}%")).fetchall()
+            else:
+                recent_logs = conn.execute("""
+                SELECT a.id, a.action, a.entity_type, a.entity_id, a.timestamp, u.full_name as user_name, u.role as user_role
+                FROM audit_logs a
+                LEFT JOIN users u ON a.user_id = u.id
+                ORDER BY a.timestamp DESC LIMIT 10
+                """).fetchall()
 
             conn.close()
 
@@ -217,6 +252,10 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
         # 5. Instruments CRUD: List (/api/instruments) - With Real Owner Scoping!
         elif path == "/api/instruments":
             user = self.get_auth_user()
+            if not user:
+                self.send_error_json("Unauthorized: Authentication required", 401)
+                return
+
             conn = db.get_db()
 
             query_sql = """
@@ -227,7 +266,7 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
             """
             params = []
 
-            if user and user["role"] == "OWNER":
+            if user["role"] == "OWNER":
                 query_sql += " AND i.owner_id = ?"
                 params.append(user["sub"])
 
@@ -257,6 +296,10 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/instruments/"):
             inst_id = path.split("/")[3]
             user = self.get_auth_user()
+            if not user:
+                self.send_error_json("Unauthorized: Authentication required", 401)
+                return
+
             conn = db.get_db()
 
             inst = conn.execute("""
@@ -271,7 +314,7 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
                 self.send_error_json("Instrument not found", 404)
                 return
 
-            if user and user["role"] == "OWNER" and inst["owner_id"] != user["sub"]:
+            if user["role"] == "OWNER" and inst["owner_id"] != user["sub"]:
                 conn.close()
                 self.send_error_json("Access denied: Not your instrument", 403)
                 return
@@ -294,6 +337,10 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
         # 7. Evaluations CRUD: List (/api/evaluations) - With Role Filtering
         elif path == "/api/evaluations":
             user = self.get_auth_user()
+            if not user:
+                self.send_error_json("Unauthorized: Authentication required", 401)
+                return
+
             conn = db.get_db()
 
             query_sql = """
@@ -309,7 +356,7 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
             """
             params = []
 
-            if user and user["role"] == "OWNER":
+            if user["role"] == "OWNER":
                 query_sql += " AND i.owner_id = ?"
                 params.append(user["sub"])
 
@@ -332,6 +379,11 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
 
         # 7b. Evaluations History Compatible View (/api/history)
         elif path == "/api/history":
+            user = self.get_auth_user()
+            if not user:
+                self.send_error_json("Unauthorized: Authentication required", 401)
+                return
+
             conn = db.get_db()
             serial = query.get("serial", [""])[0].strip()
             sql = """
@@ -344,11 +396,15 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
             JOIN instruments i ON e.instrument_id = i.id
             LEFT JOIN users u ON e.inspector_id = u.id
             LEFT JOIN reports rep ON rep.evaluation_id = e.id
+            WHERE 1=1
             """
             params = []
             if serial:
-                sql += " WHERE i.serial_number = ?"
+                sql += " AND i.serial_number = ?"
                 params.append(serial)
+            if user["role"] == "OWNER":
+                sql += " AND i.owner_id = ?"
+                params.append(user["sub"])
             sql += " ORDER BY e.created_at DESC"
             rows = conn.execute(sql, tuple(params)).fetchall()
             conn.close()
@@ -357,17 +413,21 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
 
         # 7c. Real Reports List & Retrieval (/api/reports)
         elif path == "/api/reports":
+            user = self.get_auth_user()
+            if not user:
+                self.send_error_json("Unauthorized: Authentication required", 401)
+                return
+
             conn = db.get_db()
             eval_id = query.get("evaluation_id", [""])[0].strip()
             inst_id = query.get("instrument_id", [""])[0].strip()
             serial = query.get("serial", [""])[0].strip()
-            user = self.get_auth_user()
 
             sql = """
             SELECT r.*, e.status as evaluation_status, e.test_date, e.conformity as eval_conformity
             FROM reports r
             LEFT JOIN evaluations e ON r.evaluation_id = e.id
-            LEFT JOIN instruments i ON r.instrument_id = i.id
+            LEFT JOIN instruments i ON COALESCE(r.instrument_id, e.instrument_id) = i.id
             WHERE 1=1
             """
             params = []
@@ -380,7 +440,7 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
             if serial:
                 sql += " AND r.instrument_serial = ?"
                 params.append(serial)
-            if user and user["role"] == "OWNER":
+            if user["role"] == "OWNER":
                 sql += " AND i.owner_id = ?"
                 params.append(user["sub"])
 
@@ -394,6 +454,10 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/evaluations/") and (path.endswith("/report") or path.endswith("/reports")):
             eval_id = path.split("/")[3]
             user = self.get_auth_user()
+            if not user:
+                self.send_error_json("Unauthorized: Authentication required", 401)
+                return
+
             conn = db.get_db()
 
             ev = conn.execute("""
@@ -468,6 +532,10 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/evaluations/"):
             eval_id = path.split("/")[3]
             user = self.get_auth_user()
+            if not user:
+                self.send_error_json("Unauthorized: Authentication required", 401)
+                return
+
             conn = db.get_db()
 
             ev = conn.execute("""
@@ -552,18 +620,25 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
                 return
 
             # Access control: Owner can only access attachments belonging to their instruments
-            if user["role"] == "OWNER" and att["owner_id"] and att["owner_id"] != user["sub"]:
-                self.send_error_json("Access forbidden: You cannot access unrelated evaluation attachments", 403)
+            if user["role"] == "OWNER":
+                if not att["owner_id"] or att["owner_id"] != user["sub"]:
+                    self.send_error_json("Access forbidden: You cannot access unrelated evaluation attachments", 403)
+                    return
+
+            # Resolve disk path with security validation against directory traversal
+            safe_filename = os.path.basename(att["filename"])
+            disk_path = (UPLOADS_DIR / safe_filename).resolve()
+            if not str(disk_path).startswith(str(UPLOADS_DIR.resolve())):
+                self.send_error_json("Access forbidden: Path traversal detected", 403)
                 return
 
-            # Resolve disk path with fallback to ensure persistence across restarts or directory moves
-            disk_path = Path(att["file_path"])
             if not disk_path.exists():
-                disk_path = UPLOADS_DIR / att["filename"]
-
-            if not disk_path.exists():
-                self.send_error_json("Attachment file not found on disk", 404)
-                return
+                fallback_path = Path(att["file_path"]).resolve()
+                if str(fallback_path).startswith(str(UPLOADS_DIR.resolve())) and fallback_path.exists():
+                    disk_path = fallback_path
+                else:
+                    self.send_error_json("Attachment file not found on disk", 404)
+                    return
 
             mime = att["mime_type"] or "application/octet-stream"
             self.send_response(200)
@@ -647,25 +722,68 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
         # 11. Reports Serving (/api/reports/<filename>)
         elif path.startswith("/api/reports/"):
             filename = os.path.basename(path)
-            file_path = REPORTS_DIR / filename
+            user = self.get_auth_user()
+            if not user:
+                self.send_error_json("Unauthorized: Authentication required", 401)
+                return
+
+            if not filename or ".." in filename or "/" in filename or "\\" in filename or "\x00" in filename:
+                self.send_error_json("Invalid filename", 400)
+                return
+
+            file_path = (REPORTS_DIR / filename).resolve()
+            if not str(file_path).startswith(str(REPORTS_DIR.resolve())):
+                self.send_error_json("Access forbidden: Path traversal detected", 403)
+                return
+
+            conn = db.get_db()
+            rep = conn.execute("""
+            SELECT r.report_id, COALESCE(r.instrument_id, e.instrument_id) as inst_id, i.owner_id
+            FROM reports r
+            LEFT JOIN evaluations e ON r.evaluation_id = e.id
+            LEFT JOIN instruments i ON COALESCE(r.instrument_id, e.instrument_id) = i.id
+            WHERE r.pdf_filename = ?
+            """, (filename,)).fetchone()
+            conn.close()
+
+            # Prevent downloading unindexed/arbitrary files on disk
+            if not rep:
+                self.send_error_json("Report file not found or unregistered", 404)
+                return
+
+            if user["role"] == "OWNER":
+                if not rep["owner_id"] or rep["owner_id"] != user["sub"]:
+                    self.send_error_json("Access forbidden: You do not own this report", 403)
+                    return
+
             if file_path.exists():
                 mime = "application/pdf" if filename.endswith(".pdf") else "text/html"
                 self._set_cors_headers(content_type=mime)
                 with open(file_path, "rb") as f:
                     self.wfile.write(f.read())
             else:
-                self.send_error(404, "Report file not found")
+                self.send_error_json("Report file not found on disk", 404)
             return
 
         # 12. Static Frontend Single Page Application
         else:
-            rel_path = path.lstrip("/")
-            target_file = FRONTEND_DIST / rel_path
+            clean_path = urllib.parse.unquote(path)
+            if ".." in clean_path or "\\" in clean_path:
+                self.send_error(403, "Access forbidden: Directory traversal attempt detected")
+                return
+
+            rel_path = clean_path.lstrip("/")
+            dist_resolved = FRONTEND_DIST.resolve()
+            target_file = (FRONTEND_DIST / rel_path).resolve()
+
+            if not str(target_file).startswith(str(dist_resolved)):
+                self.send_error(403, "Access forbidden: Directory traversal attempt detected")
+                return
 
             if not rel_path or not target_file.exists() or target_file.is_dir():
-                target_file = FRONTEND_DIST / "index.html"
+                target_file = dist_resolved / "index.html"
 
-            if target_file.exists():
+            if target_file.exists() and str(target_file).startswith(str(dist_resolved)):
                 content_type, _ = mimetypes.guess_type(str(target_file))
                 if content_type is None:
                     if str(target_file).endswith(".js"):
@@ -679,6 +797,8 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
 
                 self.send_response(200)
                 self.send_header("Content-Type", content_type)
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("X-Frame-Options", "DENY")
                 self.end_headers()
                 with open(target_file, "rb") as f:
                     self.wfile.write(f.read())
@@ -689,9 +809,19 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
     # HTTP POST HANDLER
     # =========================================================================
     def do_POST(self):
+        try:
+            self._handle_POST()
+        except Exception as e:
+            sys.stderr.write(f"[SECURITY/ERROR] Unhandled POST exception: {type(e).__name__}: {e}\n")
+            self.send_error_json("An internal server error occurred", 500)
+
+    def _handle_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         body = self.parse_json_body()
+        if body is None:
+            self.send_error_json("Invalid request: Malformed JSON or request payload exceeds limit", 400)
+            return
 
         # 1. Authentication: Login (/api/auth/login)
         if path == "/api/auth/login":
@@ -753,7 +883,19 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
 
         # 2. Authentication: Logout (/api/auth/logout)
         elif path == "/api/auth/logout":
+            auth_header = self.headers.get("Authorization", "")
+            token = ""
+            if auth_header.startswith("Bearer "):
+                token = auth_header.split(" ", 1)[1].strip()
+            else:
+                parsed = urllib.parse.urlparse(self.path)
+                q = urllib.parse.parse_qs(parsed.query)
+                token = q.get("token", [""])[0].strip()
+
             user = self.get_auth_user()
+            if token:
+                auth.revoke_token(token)
+
             if user:
                 db.log_audit(
                     user["sub"],
@@ -775,28 +917,40 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
         # 3. Instruments CRUD: Create (/api/instruments)
         elif path == "/api/instruments":
             user = self.get_auth_user()
-            if not user or user["role"] not in ("ADMIN", "INSPECTOR", "OWNER"):
-                self.send_error_json("Unauthorized to create instruments", 403)
+            if not user:
+                self.send_error_json("Unauthorized: Authentication required", 401)
+                return
+            if user["role"] not in ("ADMIN", "INSPECTOR", "TECHNICIAN", "OWNER"):
+                self.send_error_json("Forbidden: Access denied for role", 403)
                 return
 
             serial = (body.get("serial_number") or body.get("serialNumber") or "").strip()
             model = (body.get("model") or "").strip()
             manufacturer = (body.get("manufacturer") or "").strip()
             accuracy_class = (body.get("accuracy_class") or body.get("accuracyClass") or "III").strip()
-            max_cap = float(body.get("max_capacity") or body.get("maxCapacity") or 0)
-            min_cap = float(body.get("min_capacity") or body.get("minCapacity") or 0)
-            e_val = float(body.get("e_interval") or body.get("verificationScaleIntervalE") or 0.001)
-            d_val = float(body.get("d_interval") or body.get("actualScaleIntervalD") or e_val)
-            tare = float(body.get("tare_capacity") or body.get("tareCapacity") or max_cap)
+            try:
+                max_cap = float(body.get("max_capacity") or body.get("maxCapacity") or 0)
+                min_cap = float(body.get("min_capacity") or body.get("minCapacity") or 0)
+                e_val = float(body.get("e_interval") or body.get("verificationScaleIntervalE") or 0.001)
+                d_val = float(body.get("d_interval") or body.get("actualScaleIntervalD") or e_val)
+                tare = float(body.get("tare_capacity") or body.get("tareCapacity") or max_cap)
+                year = int(body.get("year_of_manufacture") or body.get("yearOfManufacture") or datetime.datetime.now().year)
+            except (ValueError, TypeError):
+                self.send_error_json("Invalid numeric parameter in instrument payload", 400)
+                return
+
             unit = body.get("unit") or "kg"
             type_app = (body.get("type_approval_no") or body.get("typeApprovalNo") or body.get("typeApprovalNumber") or "").strip()
-            year = int(body.get("year_of_manufacture") or body.get("yearOfManufacture") or datetime.datetime.now().year)
             country = (body.get("country_of_origin") or body.get("countryOfOrigin") or "India").strip()
             owner_id = user["sub"] if user["role"] == "OWNER" else (body.get("owner_id") or user["sub"])
             custom_id = body.get("id") or body.get("instrument_id")
 
-            if not serial or not model or max_cap <= 0 or e_val <= 0:
-                self.send_error_json("Invalid instrument parameters: serial, model, capacity and e required", 400)
+            if not serial or not model or max_cap <= 0 or e_val <= 0 or min_cap < 0 or min_cap > max_cap:
+                self.send_error_json("Invalid instrument parameters: serial, model, capacity (>0), e (>0), min (>=0 and <= max) required", 400)
+                return
+
+            if accuracy_class not in ("I", "II", "III", "IIII"):
+                self.send_error_json(f"Invalid accuracy class '{accuracy_class}'. Allowed classes: I, II, III, IIII", 400)
                 return
 
             conn = db.get_db()
@@ -876,8 +1030,11 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
         # 4. Evaluations CRUD: Create Evaluation (/api/evaluations)
         elif path == "/api/evaluations":
             user = self.get_auth_user()
-            if not user or user["role"] not in ("ADMIN", "INSPECTOR"):
-                self.send_error_json("Only Inspectors and Admins can conduct metrological evaluations", 403)
+            if not user:
+                self.send_error_json("Unauthorized: Authentication required", 401)
+                return
+            if user["role"] not in ("ADMIN", "INSPECTOR", "TECHNICIAN"):
+                self.send_error_json("Forbidden: Only Inspectors, Technicians, and Admins can conduct metrological evaluations", 403)
                 return
 
             conn = db.get_db()
@@ -961,13 +1118,26 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
 
             test_date = body.get("test_date", now[:10])
             test_location = body.get("test_location", "Regional Reference Standards Laboratory")
-            temp_c = float(body.get("temperature_c", 25.0))
-            humidity = float(body.get("humidity_percent", 55.0))
-            pressure = float(body.get("pressure_hpa", 1013.25))
-            gravity = float(body.get("gravity_mps2", 9.7915))
+            try:
+                temp_c = float(body.get("temperature_c", 25.0))
+                humidity = float(body.get("humidity_percent", 55.0))
+                pressure = float(body.get("pressure_hpa", 1013.25))
+                gravity = float(body.get("gravity_mps2", 9.7915))
+            except (ValueError, TypeError):
+                conn.close()
+                self.send_error_json("Invalid numeric environmental parameters in evaluation", 400)
+                return
+
+            if not (-50.0 <= temp_c <= 100.0) or not (0.0 <= humidity <= 100.0) or not (300.0 <= pressure <= 1500.0) or not (8.0 <= gravity <= 12.0):
+                conn.close()
+                self.send_error_json("Environmental parameters out of physical bounds", 400)
+                return
+
             ref_std = body.get("reference_standard", "OIML Class F1 Weights")
             trace_no = body.get("standards_traceability_no", "NPLI/LM/MASS/2026/01")
             status = body.get("status", "DRAFT")
+            if status not in ('DRAFT', 'SUBMITTED', 'UNDER_REVIEW', 'APPROVED', 'REJECTED', 'RETURNED'):
+                status = 'DRAFT'
 
             conn.execute("""
             INSERT INTO evaluations (
@@ -1069,8 +1239,11 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/evaluations/") and path.endswith("/readings"):
             eval_id = path.split("/")[3]
             user = self.get_auth_user()
-            if not user or user["role"] not in ("ADMIN", "INSPECTOR"):
-                self.send_error_json("Only Inspectors and Admins can log readings", 403)
+            if not user:
+                self.send_error_json("Unauthorized: Authentication required", 401)
+                return
+            if user["role"] not in ("ADMIN", "INSPECTOR", "TECHNICIAN"):
+                self.send_error_json("Forbidden: Only Inspectors, Technicians, and Admins can log readings", 403)
                 return
 
             conn = db.get_db()
@@ -1090,6 +1263,27 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
                 conn.close()
                 self.send_error_json("No readings provided", 400)
                 return
+
+            if not isinstance(readings_list, list):
+                conn.close()
+                self.send_error_json("Invalid readings format: List expected", 400)
+                return
+
+            import math
+            for item in readings_list:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    val_load = float(item.get("load", item.get("load_val", 0)))
+                    val_reading = float(item.get("reading", item.get("reading_val", 0)))
+                    if math.isnan(val_load) or math.isinf(val_load) or math.isnan(val_reading) or math.isinf(val_reading):
+                        conn.close()
+                        self.send_error_json("Malformed reading value: NaN or Infinite values are forbidden", 400)
+                        return
+                except (ValueError, TypeError):
+                    conn.close()
+                    self.send_error_json("Invalid numeric value in test readings", 400)
+                    return
 
             inst_dict = {
                 "max_capacity": ev["max_capacity"],
@@ -1188,8 +1382,11 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/evaluations/") and path.endswith("/calculate"):
             eval_id = path.split("/")[3]
             user = self.get_auth_user()
-            if not user or user["role"] not in ("ADMIN", "INSPECTOR", "REVIEWER"):
-                self.send_error_json("Unauthorized to run OIML calculations", 403)
+            if not user:
+                self.send_error_json("Unauthorized: Authentication required", 401)
+                return
+            if user["role"] not in ("ADMIN", "INSPECTOR", "TECHNICIAN", "REVIEWER"):
+                self.send_error_json("Forbidden: Unauthorized to run OIML calculations", 403)
                 return
 
             conn = db.get_db()
@@ -1276,8 +1473,11 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/evaluations/") and path.endswith("/submit"):
             eval_id = path.split("/")[3]
             user = self.get_auth_user()
-            if not user or user["role"] not in ("ADMIN", "INSPECTOR"):
-                self.send_error_json("Only Inspectors and Admins can submit evaluations for review", 403)
+            if not user:
+                self.send_error_json("Unauthorized: Authentication required", 401)
+                return
+            if user["role"] not in ("ADMIN", "INSPECTOR", "TECHNICIAN"):
+                self.send_error_json("Forbidden: Only Inspectors, Technicians, and Admins can submit evaluations for review", 403)
                 return
 
             conn = db.get_db()
@@ -1328,8 +1528,11 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/evaluations/") and path.endswith("/review"):
             eval_id = path.split("/")[3]
             user = self.get_auth_user()
-            if not user or user["role"] not in ("ADMIN", "REVIEWER"):
-                self.send_error_json("Access forbidden: Only Reviewers and Admins can approve/reject evaluations", 403)
+            if not user:
+                self.send_error_json("Unauthorized: Authentication required", 401)
+                return
+            if user["role"] not in ("ADMIN", "REVIEWER"):
+                self.send_error_json("Forbidden: Only Reviewers and Admins can approve/reject evaluations", 403)
                 return
 
             action_raw = (body.get("verdict") or body.get("action") or "").upper().strip()
@@ -1459,6 +1662,9 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
             if not user:
                 self.send_error_json("Unauthorized: Authentication required", 401)
                 return
+            if user["role"] not in ("ADMIN", "INSPECTOR", "TECHNICIAN", "OWNER"):
+                self.send_error_json("Forbidden: Access denied for role", 403)
+                return
 
             conn = db.get_db()
             # Link attachment to evaluation & its instrument
@@ -1490,15 +1696,16 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
                     self.send_error_json("Evaluation not found", 404)
                     return
 
-            original_name = (body.get("filename") or body.get("file_name") or "").strip()
+            raw_filename = (body.get("filename") or body.get("file_name") or "").strip()
+            original_name = os.path.basename(raw_filename).replace("\x00", "").strip()
+            if not original_name or ".." in raw_filename or "/" in raw_filename or "\\" in raw_filename:
+                conn.close()
+                self.send_error_json("Invalid or unsafe filename", 400)
+                return
+
             file_data_base64 = body.get("file_data")
             description = (body.get("description") or "").strip()
             mime_type = body.get("mime_type") or "application/octet-stream"
-
-            if not original_name:
-                conn.close()
-                self.send_error_json("Filename is required", 400)
-                return
 
             if not file_data_base64:
                 conn.close()
@@ -1571,7 +1778,11 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
 
             att_id = f"att_{secrets.token_hex(6)}"
             saved_filename = f"{att_id}{safe_ext}"
-            file_path = UPLOADS_DIR / saved_filename
+            file_path = (UPLOADS_DIR / saved_filename).resolve()
+            if not str(file_path).startswith(str(UPLOADS_DIR.resolve())):
+                conn.close()
+                self.send_error_json("Access forbidden: Path traversal detected", 403)
+                return
 
             with open(file_path, "wb") as f:
                 f.write(file_bytes)
@@ -1790,13 +2001,20 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
                 })
             except Exception as e:
                 conn.close()
-                self.send_error_json(f"PDF Generation failed: {str(e)}", 500)
+                sys.stderr.write(f"[SECURITY/ERROR] PDF Generation failed: {type(e).__name__}: {e}\n")
+                self.send_error_json("PDF Generation failed due to an internal rendering error", 500)
             return
 
         # 10. Direct Save to DB Bridge (/api/save_audit)
         elif path == "/api/save_audit":
             user = self.get_auth_user()
-            inspector_id = user["sub"] if user else "usr_inspector_01"
+            if not user:
+                self.send_error_json("Unauthorized: Authentication required", 401)
+                return
+            if user["role"] not in ("ADMIN", "INSPECTOR", "TECHNICIAN"):
+                self.send_error_json("Forbidden: Only Inspectors, Technicians, and Admins can save audits", 403)
+                return
+            inspector_id = user["sub"]
             report_id = body.get("report_id") or f"eval_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(4)}"
             inst_data = body.get("instrument", {})
             cond_data = body.get("test_conditions", {})
@@ -1882,9 +2100,19 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
     # HTTP PUT HANDLER
     # =========================================================================
     def do_PUT(self):
+        try:
+            self._handle_PUT()
+        except Exception as e:
+            sys.stderr.write(f"[SECURITY/ERROR] Unhandled PUT exception: {type(e).__name__}: {e}\n")
+            self.send_error_json("An internal server error occurred", 500)
+
+    def _handle_PUT(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         body = self.parse_json_body()
+        if body is None:
+            self.send_error_json("Invalid request: Malformed JSON or request payload exceeds limit", 400)
+            return
 
         if path.startswith("/api/audit"):
             self.send_error_json("Access forbidden: Audit records are legally immutable under the Legal Metrology Act and cannot be modified or deleted.", 403)
@@ -1893,8 +2121,11 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
         if path.startswith("/api/instruments/"):
             inst_id = path.split("/")[3]
             user = self.get_auth_user()
-            if not user or user["role"] not in ("ADMIN", "INSPECTOR", "OWNER"):
-                self.send_error_json("Unauthorized", 403)
+            if not user:
+                self.send_error_json("Unauthorized: Authentication required", 401)
+                return
+            if user["role"] not in ("ADMIN", "INSPECTOR", "TECHNICIAN", "OWNER"):
+                self.send_error_json("Forbidden: Access denied for role", 403)
                 return
 
             conn = db.get_db()
@@ -1921,18 +2152,40 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
             model = body.get("model") or inst["model"]
             manufacturer = body.get("manufacturer") or inst["manufacturer"]
             type_approval = body.get("type_approval_no") or body.get("typeApprovalNo") or body.get("typeApprovalNumber") or inst["type_approval_no"]
-            max_capacity = float(body.get("max_capacity") or body.get("maxCapacity") or inst["max_capacity"])
-            min_capacity = float(body.get("min_capacity") or body.get("minCapacity") or inst["min_capacity"])
-            e_interval = float(body.get("e_interval") or body.get("verificationScaleIntervalE") or inst["e_interval"])
-            d_interval = float(body.get("d_interval") or body.get("actualScaleIntervalD") or inst["d_interval"])
             accuracy_class = body.get("accuracy_class") or body.get("accuracyClass") or inst["accuracy_class"]
             unit = body.get("unit") or inst["unit"]
-            tare_capacity = float(body.get("tare_capacity") or body.get("tareCapacity") or inst["tare_capacity"])
-            year = int(body.get("year_of_manufacture") or body.get("yearOfManufacture") or inst["year_of_manufacture"] or datetime.datetime.now().year)
             country = body.get("country_of_origin") or body.get("countryOfOrigin") or inst["country_of_origin"]
             status = body.get("status") or inst["status"]
+
+            try:
+                max_capacity = float(body.get("max_capacity") or body.get("maxCapacity") or inst["max_capacity"])
+                min_capacity = float(body.get("min_capacity") or body.get("minCapacity") or inst["min_capacity"])
+                e_interval = float(body.get("e_interval") or body.get("verificationScaleIntervalE") or inst["e_interval"])
+                d_interval = float(body.get("d_interval") or body.get("actualScaleIntervalD") or inst["d_interval"])
+                tare_capacity = float(body.get("tare_capacity") or body.get("tareCapacity") or inst["tare_capacity"])
+                year = int(body.get("year_of_manufacture") or body.get("yearOfManufacture") or inst["year_of_manufacture"] or datetime.datetime.now().year)
+            except (ValueError, TypeError):
+                conn.close()
+                self.send_error_json("Invalid numeric parameter in instrument payload", 400)
+                return
+
+            if max_capacity <= 0 or e_interval <= 0 or min_capacity < 0 or min_capacity > max_capacity:
+                conn.close()
+                self.send_error_json("Invalid instrument capacities: max (>0), min (>=0 and <= max), e (>0) required", 400)
+                return
+
+            if accuracy_class not in ("I", "II", "III", "IIII"):
+                conn.close()
+                self.send_error_json(f"Invalid accuracy class '{accuracy_class}'. Allowed classes: I, II, III, IIII", 400)
+                return
+
+            if status not in ('REGISTERED', 'PENDING_VERIFICATION', 'VERIFIED', 'REJECTED', 'EXPIRED', 'ARCHIVED', 'DECOMMISSIONED'):
+                conn.close()
+                self.send_error_json(f"Invalid instrument status '{status}'", 400)
+                return
+
             owner_id = inst["owner_id"]
-            if user["role"] in ("ADMIN", "INSPECTOR") and body.get("owner_id"):
+            if user["role"] in ("ADMIN", "INSPECTOR", "TECHNICIAN") and body.get("owner_id"):
                 owner_id = body.get("owner_id")
 
             conn.execute("""
@@ -2000,8 +2253,11 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/evaluations/"):
             eval_id = path.split("/")[3]
             user = self.get_auth_user()
-            if not user or user["role"] not in ("ADMIN", "INSPECTOR"):
-                self.send_error_json("Unauthorized", 403)
+            if not user:
+                self.send_error_json("Unauthorized: Authentication required", 401)
+                return
+            if user["role"] not in ("ADMIN", "INSPECTOR", "TECHNICIAN"):
+                self.send_error_json("Forbidden: Access denied for role", 403)
                 return
 
             conn = db.get_db()
@@ -2121,6 +2377,13 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
     # HTTP DELETE HANDLER
     # =========================================================================
     def do_DELETE(self):
+        try:
+            self._handle_DELETE()
+        except Exception as e:
+            sys.stderr.write(f"[SECURITY/ERROR] Unhandled DELETE exception: {type(e).__name__}: {e}\n")
+            self.send_error_json("An internal server error occurred", 500)
+
+    def _handle_DELETE(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
 
@@ -2131,8 +2394,11 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
         if path.startswith("/api/instruments/"):
             inst_id = path.split("/")[3]
             user = self.get_auth_user()
-            if not user or user["role"] not in ("ADMIN", "OWNER", "INSPECTOR"):
-                self.send_error_json("Unauthorized: Requires Admin, Inspector, or Owner role", 403)
+            if not user:
+                self.send_error_json("Unauthorized: Authentication required", 401)
+                return
+            if user["role"] not in ("ADMIN", "OWNER", "INSPECTOR", "TECHNICIAN"):
+                self.send_error_json("Forbidden: Requires Admin, Inspector, or Owner role", 403)
                 return
 
             conn = db.get_db()
@@ -2211,8 +2477,11 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/evaluations/"):
             eval_id = path.split("/")[3]
             user = self.get_auth_user()
-            if not user or user["role"] not in ("ADMIN", "INSPECTOR"):
-                self.send_error_json("Unauthorized", 403)
+            if not user:
+                self.send_error_json("Unauthorized: Authentication required", 401)
+                return
+            if user["role"] not in ("ADMIN", "INSPECTOR", "TECHNICIAN"):
+                self.send_error_json("Forbidden: Access denied for role", 403)
                 return
 
             conn = db.get_db()
@@ -2250,8 +2519,11 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/attachments/"):
             att_id = path.split("/")[3]
             user = self.get_auth_user()
-            if not user or user["role"] not in ("ADMIN", "INSPECTOR"):
-                self.send_error_json("Unauthorized", 403)
+            if not user:
+                self.send_error_json("Unauthorized: Authentication required", 401)
+                return
+            if user["role"] not in ("ADMIN", "INSPECTOR", "TECHNICIAN"):
+                self.send_error_json("Forbidden: Access denied for role", 403)
                 return
 
             conn = db.get_db()
@@ -2261,10 +2533,9 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
                 self.send_error_json("Attachment not found", 404)
                 return
 
-            disk_path = Path(att["file_path"])
-            if not disk_path.exists():
-                disk_path = UPLOADS_DIR / att["filename"]
-            if disk_path.exists():
+            safe_filename = os.path.basename(att["filename"])
+            disk_path = (UPLOADS_DIR / safe_filename).resolve()
+            if str(disk_path).startswith(str(UPLOADS_DIR.resolve())) and disk_path.exists():
                 try:
                     os.remove(disk_path)
                 except Exception:

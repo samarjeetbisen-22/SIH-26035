@@ -209,6 +209,16 @@ def init_db():
     )
     ''')
 
+    c.execute('''
+    CREATE TABLE IF NOT EXISTS revoked_tokens (
+        token_hash TEXT PRIMARY KEY,
+        revoked_at TEXT NOT NULL,
+        expires_at INTEGER NOT NULL
+    )
+    ''')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_revoked_tokens_exp ON revoked_tokens(expires_at)')
+
+
     # Add missing columns to reports table if they do not exist
     c.execute("PRAGMA table_info(reports)")
     existing_rep_cols = {col[1] for col in c.fetchall()}
@@ -357,7 +367,50 @@ def log_audit(user_id: str, action: str, entity_type: str, entity_id: str = None
     except Exception as e:
         print(f"Error logging audit: {e}")
 
+def revoke_token(token_hash: str, expires_at: int):
+    """Stores a revoked token hash in the database to prevent replay attacks."""
+    try:
+        conn = get_db()
+        now = datetime.datetime.now().isoformat()
+        conn.execute(
+            "INSERT OR REPLACE INTO revoked_tokens (token_hash, revoked_at, expires_at) VALUES (?, ?, ?)",
+            (token_hash, now, expires_at)
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[SECURITY] Error recording revoked token: {e}")
+
+def is_token_revoked(token_hash: str) -> bool:
+    """Checks whether a token hash has been recorded as revoked."""
+    try:
+        conn = get_db()
+        row = conn.execute("SELECT 1 FROM revoked_tokens WHERE token_hash = ?", (token_hash,)).fetchone()
+        conn.close()
+        return row is not None
+    except Exception:
+        return False
+
+def clean_expired_revoked_tokens():
+    """Purges expired tokens from the revocation table."""
+    try:
+        now_ts = int(datetime.datetime.now().timestamp())
+        conn = get_db()
+        conn.execute("DELETE FROM revoked_tokens WHERE expires_at < ?", (now_ts,))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+ENVIRONMENT = os.environ.get("METROLAB_ENV", "development").lower()
+SEED_DEMO_DATA = os.environ.get("METROLAB_SEED_DEMO", "true").lower() in ("true", "1", "yes")
+
 def seed_database():
+    # Only seed demo/development accounts and mock fleets if in development or explicitly enabled
+    if not SEED_DEMO_DATA and ENVIRONMENT == "production":
+        print("[METROLAB SECURITY] Running in production mode: Skipping demo credential seeding.")
+        return
+
     conn = get_db()
     c = conn.cursor()
 
@@ -620,6 +673,78 @@ def seed_database():
             0.00042, 0.00084, 91.2, "LOW", 1, "OIML-R76-2026-SUBMITTED-DS415",
             now, now, now
         ))
+
+    # Seed Avery Weigh-Tronix Evaluation
+    c.execute("SELECT id FROM evaluations WHERE id = 'eval_avery_demo_01'")
+    if not c.fetchone():
+        c.execute('''
+        INSERT INTO evaluations (
+            id, instrument_id, inspector_id, reviewer_id, status, test_date, test_location,
+            temperature_c, humidity_percent, pressure_hpa, gravity_mps2, reference_standard,
+            standards_traceability_no, repeatability_error, linearity_error, hysteresis_error,
+            eccentricity_error, combined_uncertainty, expanded_uncertainty, compliance_score,
+            risk_level, conformity, verification_hash, certificate_number, review_comments,
+            reviewed_at, submitted_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            "eval_avery_demo_01", "inst_avery_01", "usr_inspector_01", "usr_reviewer_01", "APPROVED",
+            now[:10], "Avery Weigh-Tronix Metrology Division, Ballabgarh",
+            26.0, 50.0, 1011.0, 9.7915, "OIML Class M1 Heavy Test Masses",
+            "NPLI/LM/MASS/2026/8812", 0.5, 1.2, 0.3, 0.8,
+            1.5, 3.0, 96.8, "LOW", 1, "OIML-R76-2026-AVERY-WB50T",
+            "CERT-DL-2026-AWT0881", "OIML Class IIII weighbridge specifications verified. Approved.",
+            now, now, now, now
+        ))
+        c.execute('''
+        INSERT INTO test_readings (
+            id, evaluation_id, test_type, load_val, reading, error, mpe, ratio, passed, direction, position, repeat_number, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', ("tr_avery_demo_1", "eval_avery_demo_01", "LOAD", 10000.0, 10002.0, 2.0, 20.0, 0.1, 1, "increasing", "center", 1, now))
+
+    # Seed Reports for Essae and Avery
+    c.execute("SELECT report_id FROM reports WHERE report_id = 'REP_ESSAE_01'")
+    if not c.fetchone():
+        c.execute('''
+        INSERT INTO reports (
+            report_id, evaluation_id, instrument_id, instrument_serial, instrument_model,
+            capacity, class, combined_error, mpe, conformity, compliance_score, risk_level,
+            created_at, inspector_name, inspector_id, pdf_filename, pdf_url, certificate_number
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            "REP_ESSAE_01", "eval_demo_01", "inst_essae_01", "ET-DS852-2026-0471", "DS-852 Heavy-Duty Digital Scale",
+            15.0, "III", 0.00055, 0.005, 1, 94.64, "LOW",
+            now, "Rajesh Kumar Sharma", "usr_inspector_01",
+            "report_ET_DS852_2026_0471_eval_demo_01.pdf", "/api/reports/report_ET_DS852_2026_0471_eval_demo_01.pdf", "CERT-DL-2026-0471"
+        ))
+
+    c.execute("SELECT report_id FROM reports WHERE report_id = 'REP_AVERY_01'")
+    if not c.fetchone():
+        c.execute('''
+        INSERT INTO reports (
+            report_id, evaluation_id, instrument_id, instrument_serial, instrument_model,
+            capacity, class, combined_error, mpe, conformity, compliance_score, risk_level,
+            created_at, inspector_name, inspector_id, pdf_filename, pdf_url, certificate_number
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            "REP_AVERY_01", "eval_avery_demo_01", "inst_avery_01", "AWT-WB-50T-2026-88", "BMS-T Pitless Heavy Weighbridge",
+            50000.0, "IIII", 1.5, 20.0, 1, 96.8, "LOW",
+            now, "Rajesh Kumar Sharma", "usr_inspector_01",
+            "report_AWT_WB_50T_2026_88_eval_avery_demo_01.pdf", "/api/reports/report_AWT_WB_50T_2026_88_eval_avery_demo_01.pdf", "CERT-DL-2026-AWT0881"
+        ))
+
+    # Ensure demo PDF files exist on disk in reports directory
+    rep_dir = Path(__file__).parent / "reports"
+    rep_dir.mkdir(parents=True, exist_ok=True)
+    sample_pdf = rep_dir / "sample_input_report.pdf"
+    sample_bytes = sample_pdf.read_bytes() if sample_pdf.exists() else b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF"
+    
+    essae_pdf = rep_dir / "report_ET_DS852_2026_0471_eval_demo_01.pdf"
+    if not essae_pdf.exists():
+        essae_pdf.write_bytes(sample_bytes)
+        
+    avery_pdf = rep_dir / "report_AWT_WB_50T_2026_88_eval_avery_demo_01.pdf"
+    if not avery_pdf.exists():
+        avery_pdf.write_bytes(sample_bytes)
 
     conn.commit()
     conn.close()
