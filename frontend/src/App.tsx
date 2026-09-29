@@ -784,7 +784,7 @@ export function App() {
       <AttachmentUploadModal
         isOpen={isAttachmentModalOpen}
         onClose={() => setIsAttachmentModalOpen(false)}
-        evaluationId={currentEvaluationId || "eval_demo_01"}
+        evaluationId={currentEvaluationId || ""}
         onNotification={showToast}
       />
 

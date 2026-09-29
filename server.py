@@ -51,11 +51,18 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def get_auth_user(self):
-        """Extracts and verifies JWT token from Authorization header."""
+        """Extracts and verifies JWT token from Authorization header or ?token= query parameter."""
         auth_header = self.headers.get("Authorization", "")
-        if not auth_header.startswith("Bearer "):
+        token = ""
+        if auth_header.startswith("Bearer "):
+            token = auth_header.split(" ", 1)[1].strip()
+        else:
+            parsed = urllib.parse.urlparse(self.path)
+            q = urllib.parse.parse_qs(parsed.query)
+            token = q.get("token", [""])[0].strip()
+
+        if not token:
             return None
-        token = auth_header.split(" ", 1)[1].strip()
         payload = auth.verify_jwt_token(token)
         if not payload:
             return None
@@ -345,7 +352,47 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
             self.send_json({"history": [dict(r) for r in rows]})
             return
 
-        # 8. Evaluation Details: Get One (/api/evaluations/<id>)
+        # 8a. Evaluation Attachments List (/api/evaluations/<id>/attachments)
+        elif path.startswith("/api/evaluations/") and path.endswith("/attachments"):
+            eval_id = path.split("/")[3]
+            user = self.get_auth_user()
+            if not user:
+                self.send_error_json("Unauthorized", 401)
+                return
+
+            conn = db.get_db()
+            ev = conn.execute("""
+            SELECT e.id, e.instrument_id, i.owner_id 
+            FROM evaluations e 
+            JOIN instruments i ON e.instrument_id = i.id 
+            WHERE e.id = ?
+            """, (eval_id,)).fetchone()
+            
+            if not ev:
+                conn.close()
+                self.send_error_json("Evaluation not found", 404)
+                return
+
+            if user["role"] == "OWNER" and ev["owner_id"] != user["sub"]:
+                conn.close()
+                self.send_error_json("Access denied: Not your instrument evaluation", 403)
+                return
+
+            attachments = conn.execute("""
+            SELECT id, evaluation_id, instrument_id, filename, original_name, file_size, mime_type, file_hash, description, uploaded_at, uploader_id
+            FROM attachments
+            WHERE evaluation_id = ?
+            ORDER BY uploaded_at DESC
+            """, (eval_id,)).fetchall()
+            conn.close()
+
+            self.send_json({
+                "attachments": [dict(a) for a in attachments],
+                "count": len(attachments)
+            })
+            return
+
+        # 8b. Evaluation Details: Get One (/api/evaluations/<id>)
         elif path.startswith("/api/evaluations/"):
             eval_id = path.split("/")[3]
             user = self.get_auth_user()
@@ -384,7 +431,7 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
             """, (eval_id,)).fetchall()
 
             attachments = conn.execute("""
-            SELECT id, filename, original_name, file_size, mime_type, file_hash, description, uploaded_at, uploader_id
+            SELECT id, evaluation_id, instrument_id, filename, original_name, file_size, mime_type, file_hash, description, uploaded_at, uploader_id
             FROM attachments
             WHERE evaluation_id = ?
             ORDER BY uploaded_at DESC
@@ -402,12 +449,37 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
         # 9. Attachments: Download File (/api/attachments/<id>/download)
         elif path.startswith("/api/attachments/") and path.endswith("/download"):
             att_id = path.split("/")[3]
+            user = self.get_auth_user()
+            if not user:
+                self.send_error_json("Unauthorized: Authentication required to download attachments", 401)
+                return
+
             conn = db.get_db()
-            att = conn.execute("SELECT * FROM attachments WHERE id = ?", (att_id,)).fetchone()
+            att = conn.execute("""
+            SELECT a.*, e.instrument_id as eval_inst_id, i.owner_id 
+            FROM attachments a
+            LEFT JOIN evaluations e ON a.evaluation_id = e.id
+            LEFT JOIN instruments i ON COALESCE(a.instrument_id, e.instrument_id) = i.id
+            WHERE a.id = ?
+            """, (att_id,)).fetchone()
             conn.close()
 
-            if not att or not os.path.exists(att["file_path"]):
-                self.send_error(404, "Attachment file not found")
+            if not att:
+                self.send_error_json("Attachment not found", 404)
+                return
+
+            # Access control: Owner can only access attachments belonging to their instruments
+            if user["role"] == "OWNER" and att["owner_id"] and att["owner_id"] != user["sub"]:
+                self.send_error_json("Access forbidden: You cannot access unrelated evaluation attachments", 403)
+                return
+
+            # Resolve disk path with fallback to ensure persistence across restarts or directory moves
+            disk_path = Path(att["file_path"])
+            if not disk_path.exists():
+                disk_path = UPLOADS_DIR / att["filename"]
+
+            if not disk_path.exists():
+                self.send_error_json("Attachment file not found on disk", 404)
                 return
 
             mime = att["mime_type"] or "application/octet-stream"
@@ -418,7 +490,7 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
             self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
             self.end_headers()
-            with open(att["file_path"], "rb") as f:
+            with open(disk_path, "rb") as f:
                 self.wfile.write(f.read())
             return
 
@@ -1016,27 +1088,119 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
             eval_id = path.split("/")[3]
             user = self.get_auth_user()
             if not user:
-                self.send_error_json("Unauthorized", 401)
+                self.send_error_json("Unauthorized: Authentication required", 401)
                 return
 
-            original_name = body.get("filename") or body.get("file_name") or f"attachment_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}.pdf"
+            conn = db.get_db()
+            # Link attachment to evaluation & its instrument
+            ev = conn.execute("""
+            SELECT e.id, e.instrument_id, i.owner_id 
+            FROM evaluations e 
+            JOIN instruments i ON e.instrument_id = i.id 
+            WHERE e.id = ?
+            """, (eval_id,)).fetchone()
+
+            instrument_id = None
+            if ev:
+                instrument_id = ev["instrument_id"]
+                if user["role"] == "OWNER" and ev["owner_id"] != user["sub"]:
+                    conn.close()
+                    self.send_error_json("Access denied: You do not own the instrument for this evaluation", 403)
+                    return
+            else:
+                # Check if eval_id was an instrument ID directly
+                inst = conn.execute("SELECT id, owner_id FROM instruments WHERE id = ?", (eval_id,)).fetchone()
+                if inst:
+                    instrument_id = inst["id"]
+                    if user["role"] == "OWNER" and inst["owner_id"] != user["sub"]:
+                        conn.close()
+                        self.send_error_json("Access denied: Not your instrument", 403)
+                        return
+                else:
+                    conn.close()
+                    self.send_error_json("Evaluation not found", 404)
+                    return
+
+            original_name = (body.get("filename") or body.get("file_name") or "").strip()
             file_data_base64 = body.get("file_data")
-            description = body.get("description", "")
-            mime_type = body.get("mime_type") or body.get("file_type") or "application/octet-stream"
+            description = (body.get("description") or "").strip()
+            mime_type = body.get("mime_type") or "application/octet-stream"
+
+            if not original_name:
+                conn.close()
+                self.send_error_json("Filename is required", 400)
+                return
 
             if not file_data_base64:
-                self.send_error_json("File data (base64) required", 400)
+                conn.close()
+                self.send_error_json("Empty file data: File content is required", 400)
                 return
 
+            # Basic File Validation: Extension checks
+            safe_ext = os.path.splitext(original_name)[1].lower()
+            if not safe_ext:
+                conn.close()
+                self.send_error_json("File must have a valid extension", 400)
+                return
+
+            DANGEROUS_EXTENSIONS = {
+                ".exe", ".bat", ".cmd", ".sh", ".ps1", ".vbs", ".js", ".py", ".php",
+                ".pl", ".dll", ".scr", ".msi", ".jar", ".com", ".hta", ".bin", ".iso",
+                ".wsf", ".reg", ".elf", ".pif", ".c", ".cpp", ".pyw"
+            }
+            if safe_ext in DANGEROUS_EXTENSIONS:
+                conn.close()
+                self.send_error_json(f"Dangerous file type '{safe_ext}' is forbidden for security", 400)
+                return
+
+            ALLOWED_EXTENSIONS = {
+                ".pdf", ".png", ".jpg", ".jpeg", ".csv", ".xlsx", ".xls", ".txt", ".docx", ".doc"
+            }
+            if safe_ext not in ALLOWED_EXTENSIONS:
+                conn.close()
+                self.send_error_json(f"Unsupported file type '{safe_ext}'. Allowed formats: PDF, PNG, JPG/JPEG, CSV, XLSX, TXT, DOCX", 400)
+                return
+
+            # Decode base64 payload
             try:
                 import base64
                 file_bytes = base64.b64decode(file_data_base64)
             except Exception:
+                conn.close()
                 self.send_error_json("Invalid base64 payload", 400)
                 return
 
+            # Size limits: 1 byte to 10 MB
+            if len(file_bytes) == 0:
+                conn.close()
+                self.send_error_json("Empty file cannot be uploaded", 400)
+                return
+
+            MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+            if len(file_bytes) > MAX_FILE_SIZE:
+                conn.close()
+                self.send_error_json("File size exceeds maximum allowed limit of 10 MB", 400)
+                return
+
+            # Content signature / magic bytes validation
+            if safe_ext == ".pdf" and not file_bytes.startswith(b"%PDF-"):
+                conn.close()
+                self.send_error_json("Invalid file content: Not a valid PDF document", 400)
+                return
+            elif safe_ext == ".png" and not file_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+                conn.close()
+                self.send_error_json("Invalid file content: Not a valid PNG image", 400)
+                return
+            elif safe_ext in (".jpg", ".jpeg") and not file_bytes.startswith(b"\xff\xd8\xff"):
+                conn.close()
+                self.send_error_json("Invalid file content: Not a valid JPEG image", 400)
+                return
+            elif safe_ext in (".txt", ".csv") and b"\x00" in file_bytes[:1024]:
+                conn.close()
+                self.send_error_json("Invalid file content: Binary data detected in text file", 400)
+                return
+
             att_id = f"att_{secrets.token_hex(6)}"
-            safe_ext = os.path.splitext(original_name)[1]
             saved_filename = f"{att_id}{safe_ext}"
             file_path = UPLOADS_DIR / saved_filename
 
@@ -1046,21 +1210,35 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
             file_hash = hashlib.sha256(file_bytes).hexdigest()
             now = datetime.datetime.now().isoformat()
 
-            conn = db.get_db()
             conn.execute("""
             INSERT INTO attachments (
-                id, evaluation_id, uploader_id, filename, original_name, file_path,
+                id, evaluation_id, instrument_id, uploader_id, filename, original_name, file_path,
                 file_size, mime_type, file_hash, description, uploaded_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                att_id, eval_id, user["sub"], saved_filename, original_name,
-                str(file_path), len(file_bytes), mime_type, file_hash, description, now
+                att_id, ev["id"] if ev else None, instrument_id, user["sub"], saved_filename, original_name,
+                str(file_path), len(file_bytes), mime_type, file_hash, description or "Metrological test attachment", now
             ))
             conn.commit()
             conn.close()
 
-            db.log_audit(user["sub"], "UPLOAD_ATTACHMENT", "ATTACHMENT", att_id, {"filename": original_name, "eval_id": eval_id}, self.client_address[0])
-            self.send_json({"success": True, "attachment_id": att_id, "filename": original_name}, 201)
+            db.log_audit(user["sub"], "UPLOAD_ATTACHMENT", "ATTACHMENT", att_id, {
+                "filename": original_name,
+                "file_size": len(file_bytes),
+                "eval_id": eval_id,
+                "instrument_id": instrument_id
+            }, self.client_address[0])
+
+            self.send_json({
+                "success": True,
+                "attachment_id": att_id,
+                "filename": original_name,
+                "file_size": len(file_bytes),
+                "file_hash": file_hash,
+                "evaluation_id": ev["id"] if ev else None,
+                "instrument_id": instrument_id,
+                "message": f"Attachment '{original_name}' uploaded successfully"
+            }, 201)
             return
 
         # 9. Generate ReportLab PDF with QR Code (/api/evaluations/<id>/generate_pdf)
@@ -1453,6 +1631,37 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
 
             db.log_audit(user["sub"], "DELETE", "EVALUATION", eval_id, {}, self.client_address[0])
             self.send_json({"success": True, "message": "Evaluation deleted"})
+            return
+
+        elif path.startswith("/api/attachments/"):
+            att_id = path.split("/")[3]
+            user = self.get_auth_user()
+            if not user or user["role"] not in ("ADMIN", "INSPECTOR"):
+                self.send_error_json("Unauthorized", 403)
+                return
+
+            conn = db.get_db()
+            att = conn.execute("SELECT * FROM attachments WHERE id = ?", (att_id,)).fetchone()
+            if not att:
+                conn.close()
+                self.send_error_json("Attachment not found", 404)
+                return
+
+            disk_path = Path(att["file_path"])
+            if not disk_path.exists():
+                disk_path = UPLOADS_DIR / att["filename"]
+            if disk_path.exists():
+                try:
+                    os.remove(disk_path)
+                except Exception:
+                    pass
+
+            conn.execute("DELETE FROM attachments WHERE id = ?", (att_id,))
+            conn.commit()
+            conn.close()
+
+            db.log_audit(user["sub"], "DELETE", "ATTACHMENT", att_id, {"filename": att["original_name"]}, self.client_address[0])
+            self.send_json({"success": True, "message": "Attachment deleted successfully"})
             return
 
         else:
