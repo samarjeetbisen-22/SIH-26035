@@ -36,13 +36,12 @@ import socketserver
 # --- AUTO INSTALLER ---
 def install_packages():
     required = {"reportlab", "qrcode", "matplotlib", "Pillow"}
-    try:
-        import pkg_resources
-        installed = {pkg.key for pkg in pkg_resources.working_set}
-        missing = required - installed
-    except ImportError:
-        missing = required
-        
+    missing = set()
+    import importlib.util
+    for pkg in required:
+        mod_name = "PIL" if pkg == "Pillow" else pkg
+        if importlib.util.find_spec(mod_name) is None:
+            missing.add(pkg)
     if missing:
         print(f"Installing missing packages: {', '.join(missing)}")
         try:

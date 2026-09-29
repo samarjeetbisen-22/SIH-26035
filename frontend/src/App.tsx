@@ -16,6 +16,7 @@ import {
   checkBackendStatus,
   saveAuditToBackend,
   generateReportLabPdf,
+  generateEvaluationPdf,
   fetchAuditHistory,
   getAuthUser,
   setAuthUser,
@@ -85,7 +86,9 @@ export function App() {
   const [evaluationStatus, setEvaluationStatus] = useState<string>("DRAFT");
   const [reviewComments, setReviewComments] = useState<string>("");
   const [certificateNumber, setCertificateNumber] = useState<string>("");
-  const [isSubmittingForReview, setIsSubmittingForReview] = useState<boolean>(false);
+  const [currentReport, setCurrentReport] = useState<any | null>(null);
+  const [isSubmittingForReview, setIsSubmittingForReview] =
+    useState<boolean>(false);
 
   // Backend Integration & Modals State
   const [backendOnline, setBackendOnline] = useState<boolean>(false);
@@ -207,6 +210,13 @@ export function App() {
           }
         }
 
+        // Restore Report if generated
+        if (data.report) {
+          setCurrentReport(data.report);
+        } else {
+          setCurrentReport(null);
+        }
+
         showToast(`Loaded evaluation ${ev.id} (${ev.status})`);
         return true;
       }
@@ -260,6 +270,7 @@ export function App() {
     setEvaluationStatus("DRAFT");
     setReviewComments("");
     setCertificateNumber("");
+    setCurrentReport(null);
     localStorage.removeItem("metrolab_current_eval_id");
     localStorage.removeItem("metrolab_draft_readings");
     setInstrument(DEFAULT_INSTRUMENT);
@@ -276,6 +287,7 @@ export function App() {
       setEvaluationStatus("DRAFT");
       setReviewComments("");
       setCertificateNumber("");
+      setCurrentReport(null);
       localStorage.removeItem("metrolab_current_eval_id");
       localStorage.removeItem("metrolab_draft_readings");
       setInstrument(found.instrument);
@@ -295,6 +307,9 @@ export function App() {
   const handleReset = () => {
     setCurrentEvaluationId(null);
     setEvaluationStatus("DRAFT");
+    setReviewComments("");
+    setCertificateNumber("");
+    setCurrentReport(null);
     localStorage.removeItem("metrolab_current_eval_id");
     localStorage.removeItem("metrolab_draft_readings");
     setInstrument(DEFAULT_INSTRUMENT);
@@ -498,7 +513,9 @@ export function App() {
         showToast("Evaluation submitted to Legal Metrology Reviewer queue!");
         checkBackend();
       } else {
-        showToast("Submission failed: " + (res.error || res.message || "Error"));
+        showToast(
+          "Submission failed: " + (res.error || res.message || "Error"),
+        );
       }
     } catch (err: any) {
       showToast("Submission error: " + (err.message || "Failed"));
@@ -507,17 +524,44 @@ export function App() {
     }
   };
 
-  // Backend: Official ReportLab PDF
+  // Backend: Official Statutory ReportLab PDF
   const handleGeneratePythonPdf = async () => {
     setIsGeneratingPdf(true);
     try {
-      const res = await generateReportLabPdf(instrument, conditions, readings);
+      if (!currentEvaluationId) {
+        showToast(
+          "Please save the evaluation before generating an official report.",
+        );
+        return;
+      }
+      if (evaluationStatus !== "APPROVED") {
+        showToast(
+          "Statutory rule: Final report can only be generated after Legal Metrology Reviewer approval.",
+        );
+        return;
+      }
+      const res = await generateEvaluationPdf(currentEvaluationId);
       if (res.success && res.pdf_url) {
-        showToast("Generated official Python ReportLab PDF!");
+        setCurrentReport({
+          report_id: res.report_id,
+          pdf_filename: res.filename,
+          pdf_url: res.pdf_url,
+          certificate_number: res.certificate_number,
+          created_at: res.created_at,
+          evaluation_id: currentEvaluationId,
+          instrument_id: res.instrument_id,
+        });
+        showToast(
+          `Official statutory report generated: ${res.report_id || res.certificate_number}`,
+        );
         window.open(res.pdf_url, "_blank");
       } else {
-        showToast("PDF generation failed: " + (res.error || res.message));
+        showToast(
+          "PDF generation failed: " + (res.error || res.message || "Failed"),
+        );
       }
+    } catch (err: any) {
+      showToast("PDF generation error: " + (err.message || "Failed"));
     } finally {
       setIsGeneratingPdf(false);
     }
@@ -802,6 +846,7 @@ export function App() {
             evaluationStatus={evaluationStatus}
             reviewComments={reviewComments}
             certificateNumber={certificateNumber}
+            currentReport={currentReport}
             onSubmitForReview={handleSubmitForReview}
             isSubmittingForReview={isSubmittingForReview}
           />

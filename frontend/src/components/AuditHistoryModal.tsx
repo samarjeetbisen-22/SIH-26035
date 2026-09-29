@@ -162,12 +162,25 @@ export const AuditHistoryModal: React.FC<AuditHistoryModalProps> = ({
                       </td>
                       {onSelectEvaluation && (
                         <td className="py-2.5 px-3 text-right font-sans">
-                          <button
-                            onClick={() => onSelectEvaluation(r.report_id)}
-                            className="px-2 py-0.5 text-[11px] font-medium text-blue-600 bg-blue-50 border border-blue-200 rounded hover:bg-blue-100 transition-colors"
-                          >
-                            Open
-                          </button>
+                          <div className="flex items-center justify-end space-x-1.5">
+                            {r.pdf_url && (
+                              <a
+                                href={r.pdf_url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="px-2 py-0.5 text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-300 rounded hover:bg-emerald-100 transition-colors"
+                                title="Download Stamped Final PDF"
+                              >
+                                PDF
+                              </a>
+                            )}
+                            <button
+                              onClick={() => onSelectEvaluation(r.report_id)}
+                              className="px-2 py-0.5 text-[11px] font-medium text-blue-600 bg-blue-50 border border-blue-200 rounded hover:bg-blue-100 transition-colors"
+                            >
+                              Open
+                            </button>
+                          </div>
                         </td>
                       )}
                     </tr>

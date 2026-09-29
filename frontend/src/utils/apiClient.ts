@@ -303,6 +303,38 @@ export async function generateEvaluationPdf(evalId: string) {
   }
 }
 
+export async function fetchEvaluationReport(evalId: string) {
+  const token = getAuthToken();
+  try {
+    const res = await fetch(`${API_BASE}/evaluations/${evalId}/report`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {}
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchReports(filters?: { evaluation_id?: string; instrument_id?: string; serial?: string }) {
+  const token = getAuthToken();
+  try {
+    const params = new URLSearchParams();
+    if (filters?.evaluation_id) params.append('evaluation_id', filters.evaluation_id);
+    if (filters?.instrument_id) params.append('instrument_id', filters.instrument_id);
+    if (filters?.serial) params.append('serial', filters.serial);
+    const qs = params.toString() ? `?${params.toString()}` : '';
+    const res = await fetch(`${API_BASE}/reports${qs}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {}
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.reports || [];
+  } catch {
+    return [];
+  }
+}
+
 export async function fetchAuditLogs() {
   const token = getAuthToken();
   try {
@@ -369,9 +401,13 @@ export async function generateReportLabPdf(
 }
 
 export async function fetchAuditHistory(serialNumber?: string): Promise<AuditHistoryRecord[]> {
+  const token = getAuthToken();
   try {
     const url = serialNumber ? `${API_BASE}/history?serial=${encodeURIComponent(serialNumber)}` : `${API_BASE}/history`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
+    const res = await fetch(url, {
+      signal: AbortSignal.timeout(3000),
+      headers: token ? { Authorization: `Bearer ${token}` } : {}
+    });
     if (!res.ok) return [];
     const data = await res.json();
     return data.history || [];

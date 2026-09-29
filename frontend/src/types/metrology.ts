@@ -111,5 +111,10 @@ export interface AuditHistoryRecord {
   risk_level: string;
   created_at: string;
   inspector_name: string;
+  pdf_filename?: string;
+  pdf_url?: string;
+  certificate_number?: string;
+  status?: string;
+  evaluation_id?: string;
 }
 

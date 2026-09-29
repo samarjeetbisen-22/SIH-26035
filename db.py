@@ -182,6 +182,8 @@ def init_db():
     c.execute('''
     CREATE TABLE IF NOT EXISTS reports (
         report_id TEXT PRIMARY KEY,
+        evaluation_id TEXT,
+        instrument_id TEXT,
         instrument_serial TEXT,
         instrument_model TEXT,
         capacity REAL,
@@ -194,9 +196,27 @@ def init_db():
         created_at TEXT,
         inspector_name TEXT,
         inspector_id TEXT,
-        json_data BLOB
+        pdf_filename TEXT,
+        pdf_url TEXT,
+        certificate_number TEXT,
+        json_data BLOB,
+        FOREIGN KEY (evaluation_id) REFERENCES evaluations(id) ON DELETE CASCADE,
+        FOREIGN KEY (instrument_id) REFERENCES instruments(id) ON DELETE CASCADE
     )
     ''')
+
+    # Add missing columns to reports table if they do not exist
+    c.execute("PRAGMA table_info(reports)")
+    existing_rep_cols = {col[1] for col in c.fetchall()}
+    for col_name, col_type in [
+        ("evaluation_id", "TEXT"),
+        ("instrument_id", "TEXT"),
+        ("pdf_filename", "TEXT"),
+        ("pdf_url", "TEXT"),
+        ("certificate_number", "TEXT"),
+    ]:
+        if col_name not in existing_rep_cols:
+            c.execute(f"ALTER TABLE reports ADD COLUMN {col_name} {col_type}")
 
     conn.commit()
 

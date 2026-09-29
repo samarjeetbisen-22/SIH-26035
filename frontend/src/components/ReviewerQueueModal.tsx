@@ -58,7 +58,9 @@ export const ReviewerQueueModal: React.FC<ReviewerQueueModalProps> = ({
 
   if (!isOpen) return null;
 
-  const handleReviewAction = async (verdict: "APPROVE" | "REJECT" | "RETURN" | "UNDER_REVIEW") => {
+  const handleReviewAction = async (
+    verdict: "APPROVE" | "REJECT" | "RETURN" | "UNDER_REVIEW",
+  ) => {
     if (!selectedEval) return;
     if ((verdict === "REJECT" || verdict === "RETURN") && !comments.trim()) {
       alert(

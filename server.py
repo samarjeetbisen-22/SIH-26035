@@ -335,12 +335,15 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
             conn = db.get_db()
             serial = query.get("serial", [""])[0].strip()
             sql = """
-            SELECT e.id as report_id, e.test_date, e.created_at, e.compliance_score, e.risk_level, e.conformity,
-                   i.model as instrument_model, i.serial_number as instrument_serial, i.accuracy_class as class,
-                   u.full_name as inspector_name
+            SELECT e.id as report_id, e.id as evaluation_id, e.status, e.certificate_number, e.test_date, e.created_at,
+                   e.compliance_score, e.risk_level, e.conformity,
+                   i.id as instrument_id, i.model as instrument_model, i.serial_number as instrument_serial, i.accuracy_class as class,
+                   u.full_name as inspector_name,
+                   rep.pdf_filename, rep.pdf_url, rep.report_id as official_report_id
             FROM evaluations e
             JOIN instruments i ON e.instrument_id = i.id
             LEFT JOIN users u ON e.inspector_id = u.id
+            LEFT JOIN reports rep ON rep.evaluation_id = e.id
             """
             params = []
             if serial:
@@ -350,6 +353,75 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
             rows = conn.execute(sql, tuple(params)).fetchall()
             conn.close()
             self.send_json({"history": [dict(r) for r in rows]})
+            return
+
+        # 7c. Real Reports List & Retrieval (/api/reports)
+        elif path == "/api/reports":
+            conn = db.get_db()
+            eval_id = query.get("evaluation_id", [""])[0].strip()
+            inst_id = query.get("instrument_id", [""])[0].strip()
+            serial = query.get("serial", [""])[0].strip()
+            user = self.get_auth_user()
+
+            sql = """
+            SELECT r.*, e.status as evaluation_status, e.test_date, e.conformity as eval_conformity
+            FROM reports r
+            LEFT JOIN evaluations e ON r.evaluation_id = e.id
+            LEFT JOIN instruments i ON r.instrument_id = i.id
+            WHERE 1=1
+            """
+            params = []
+            if eval_id:
+                sql += " AND r.evaluation_id = ?"
+                params.append(eval_id)
+            if inst_id:
+                sql += " AND r.instrument_id = ?"
+                params.append(inst_id)
+            if serial:
+                sql += " AND r.instrument_serial = ?"
+                params.append(serial)
+            if user and user["role"] == "OWNER":
+                sql += " AND i.owner_id = ?"
+                params.append(user["sub"])
+
+            sql += " ORDER BY r.created_at DESC"
+            rows = conn.execute(sql, tuple(params)).fetchall()
+            conn.close()
+            self.send_json({"success": True, "reports": [dict(r) for r in rows]})
+            return
+
+        # 7d. Evaluation Report Retrieval (/api/evaluations/<id>/report, /api/evaluations/<id>/reports)
+        elif path.startswith("/api/evaluations/") and (path.endswith("/report") or path.endswith("/reports")):
+            eval_id = path.split("/")[3]
+            user = self.get_auth_user()
+            conn = db.get_db()
+
+            ev = conn.execute("""
+            SELECT e.id, e.instrument_id, i.owner_id
+            FROM evaluations e
+            JOIN instruments i ON e.instrument_id = i.id
+            WHERE e.id = ?
+            """, (eval_id,)).fetchone()
+
+            if not ev:
+                conn.close()
+                self.send_error_json("Evaluation not found", 404)
+                return
+
+            if user and user["role"] == "OWNER" and ev["owner_id"] != user["sub"]:
+                conn.close()
+                self.send_error_json("Access forbidden: You do not own this instrument", 403)
+                return
+
+            report = conn.execute("""
+            SELECT * FROM reports WHERE evaluation_id = ? ORDER BY created_at DESC LIMIT 1
+            """, (eval_id,)).fetchone()
+            conn.close()
+
+            if report:
+                self.send_json({"success": True, "report": dict(report)})
+            else:
+                self.send_error_json("No report generated for this evaluation yet", 404)
             return
 
         # 8a. Evaluation Attachments List (/api/evaluations/<id>/attachments)
@@ -437,12 +509,23 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
             ORDER BY uploaded_at DESC
             """, (eval_id,)).fetchall()
 
+            report = conn.execute("""
+            SELECT report_id, evaluation_id, instrument_id, instrument_serial, instrument_model,
+                   capacity, class, combined_error, mpe, conformity, compliance_score, risk_level,
+                   created_at, inspector_name, inspector_id, pdf_filename, pdf_url, certificate_number
+            FROM reports
+            WHERE evaluation_id = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """, (eval_id,)).fetchone()
+
             conn.close()
 
             self.send_json({
                 "evaluation": dict(ev),
                 "readings": [dict(r) for r in readings],
-                "attachments": [dict(a) for a in attachments]
+                "attachments": [dict(a) for a in attachments],
+                "report": dict(report) if report else None
             })
             return
 
@@ -693,6 +776,14 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
                     else:
                         instrument_id = f"inst_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(4)}"
                         now_inst = datetime.datetime.now().isoformat()
+                        # Auto-associate instrument with manufacturer owner if available
+                        owner_id = inst_info.get("owner_id") or body.get("owner_id")
+                        if not owner_id:
+                            mfr = inst_info.get("manufacturer", "")
+                            mfr_first = mfr.split()[0] if mfr else ""
+                            owner_row = conn.execute("SELECT id FROM users WHERE role = 'OWNER' AND (organization LIKE ? OR full_name LIKE ?)", (f"%{mfr_first}%", f"%{mfr_first}%")).fetchone()
+                            owner_id = owner_row["id"] if owner_row else user["sub"]
+
                         conn.execute("""
                         INSERT INTO instruments (
                             id, serial_number, model, manufacturer, accuracy_class, max_capacity,
@@ -711,7 +802,7 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
                             inst_info.get("unit", "kg"),
                             float(inst_info.get("tareCapacity", 15.0)),
                             inst_info.get("typeApprovalNumber", ""),
-                            user["sub"], now_inst, now_inst
+                            owner_id, now_inst, now_inst
                         ))
 
             if not instrument_id:
@@ -1263,20 +1354,30 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
             }, 201)
             return
 
-        # 9. Generate ReportLab PDF with QR Code (/api/evaluations/<id>/generate_pdf)
-        elif path.startswith("/api/evaluations/") and path.endswith("/generate_pdf"):
-            eval_id = path.split("/")[3]
+        # 9. Real Report Workflow: Generate Official Statutory PDF Report & Store Metadata
+        elif (path.startswith("/api/evaluations/") and path.endswith("/generate_pdf")) or path == "/api/generate_pdf":
             user = self.get_auth_user()
             if not user:
-                self.send_error_json("Unauthorized", 401)
+                self.send_error_json("Unauthorized: Authentication required", 401)
                 return
+
+            if path == "/api/generate_pdf":
+                eval_id = (body.get("evaluation_id") or body.get("report_id") or body.get("id") or "").strip()
+                if not eval_id:
+                    self.send_error_json("Evaluation ID is required to generate official statutory report. Statutory review and approval is required.", 400)
+                    return
+            else:
+                eval_id = path.split("/")[3]
 
             conn = db.get_db()
             ev = conn.execute("""
-            SELECT e.*, i.*, u_ins.full_name as inspector_name, u_ins.badge_id as inspector_badge
+            SELECT e.*, i.*,
+                   u_ins.full_name as inspector_name, u_ins.badge_id as inspector_badge,
+                   u_rev.full_name as reviewer_name, u_rev.badge_id as reviewer_badge
             FROM evaluations e
             JOIN instruments i ON e.instrument_id = i.id
             LEFT JOIN users u_ins ON e.inspector_id = u_ins.id
+            LEFT JOIN users u_rev ON e.reviewer_id = u_rev.id
             WHERE e.id = ?
             """, (eval_id,)).fetchone()
 
@@ -1285,44 +1386,75 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
                 self.send_error_json("Evaluation not found", 404)
                 return
 
-            readings = conn.execute("SELECT * FROM test_readings WHERE evaluation_id = ?", (eval_id,)).fetchall()
-            conn.close()
+            if user["role"] == "OWNER" and ev["owner_id"] != user["sub"]:
+                conn.close()
+                self.send_error_json("Access forbidden: You do not own this instrument", 403)
+                return
+
+            # Required Approval Status Constraint: Only APPROVED evaluations can be issued final statutory reports
+            if ev["status"] != "APPROVED":
+                conn.close()
+                self.send_error_json(f"Cannot generate final statutory report: Evaluation status is '{ev['status']}'. Only APPROVED evaluations can receive final statutory reports.", 400)
+                return
+
+            readings = conn.execute("SELECT * FROM test_readings WHERE evaluation_id = ? ORDER BY rowid ASC", (eval_id,)).fetchall()
+            if not readings or len(readings) == 0:
+                conn.close()
+                self.send_error_json("Cannot generate final report: Zero test readings recorded for this evaluation.", 400)
+                return
 
             serial_clean = ev["serial_number"].replace("/", "_").replace("-", "_").replace(" ", "_")
             pdf_filename = f"report_{serial_clean}_{eval_id}.pdf"
             pdf_path = REPORTS_DIR / pdf_filename
 
+            report_id = (ev["certificate_number"] or f"REP-{serial_clean}-{eval_id[-6:]}").replace("/", "_").replace(":", "_").replace(" ", "_")
+            cert_no = ev["certificate_number"] or report_id
+
             report_data = {
-                "report_id": (ev["certificate_number"] or eval_id).replace("/", "_").replace(":", "_").replace(" ", "_"),
+                "report_id": report_id,
+                "certificate_number": cert_no,
                 "instrument": {
                     "manufacturer": ev["manufacturer"],
                     "model": ev["model"],
                     "serial_number": ev["serial_number"],
                     "accuracy_class": ev["accuracy_class"],
-                    "max_capacity": ev["max_capacity"],
-                    "min_capacity": ev["min_capacity"],
-                    "verification_scale_interval_e": ev["e_interval"]
+                    "max_capacity": float(ev["max_capacity"]),
+                    "min_capacity": float(ev["min_capacity"]),
+                    "verification_scale_interval_e": float(ev["e_interval"]),
+                    "actual_scale_interval_d": float(ev["d_interval"] or ev["e_interval"]),
+                    "unit": ev["unit"] or "kg"
                 },
                 "test_conditions": {
                     "inspector_name": ev["inspector_name"] or "Authorized Officer",
-                    "inspector_id": ev["inspector_badge"] or "INS-001"
+                    "inspector_id": ev["inspector_badge"] or ev["inspector_id"] or "INS-001",
+                    "reviewer_name": ev["reviewer_name"] or "Central Legal Metrology Board",
+                    "location": ev["test_location"],
+                    "temperature": float(ev["temperature_c"]),
+                    "humidity": float(ev["humidity_percent"]),
+                    "pressure": float(ev["pressure_hpa"]),
+                    "gravity": float(ev["gravity_mps2"]),
+                    "test_date": ev["test_date"]
                 },
                 "generated_at": ev["created_at"],
                 "conformity": ev["conformity"] == 1,
-                "hash": ev["verification_hash"] or "OIML-VERIFIED",
+                "hash": ev["verification_hash"] or "OIML-R76-VERIFIED",
                 "calculations": {
                     "compliance_score": float(ev["compliance_score"] or 100.0),
                     "risk_level": ev["risk_level"] or "LOW",
-                    "repeatability": float(ev["repeatability_error"] or 0.0001),
-                    "linearity": float(ev["linearity_error"] or 0.0001),
-                    "hysteresis": float(ev["hysteresis_error"] or 0.0001),
-                    "eccentricity": float(ev["eccentricity_error"] or 0.0001),
-                    "combined_uncertainty": float(ev["combined_uncertainty"] or 0.0001),
+                    "repeatability": float(ev["repeatability_error"] or 0.0),
+                    "linearity": float(ev["linearity_error"] or 0.0),
+                    "hysteresis": float(ev["hysteresis_error"] or 0.0),
+                    "eccentricity": float(ev["eccentricity_error"] or 0.0),
+                    "combined_uncertainty": float(ev["combined_uncertainty"] or 0.0),
+                    "expanded_uncertainty": float(ev["expanded_uncertainty"] or 0.0),
                     "point_results": [
                         {
                             "load_kg": float(r["load_val"]),
                             "reading": float(r["reading"]),
                             "direction": r["direction"],
+                            "position": r["position"],
+                            "repeat_number": r["repeat_number"],
+                            "test_type": r["test_type"],
                             "error_kg": float(r["error"]),
                             "mpe_kg": float(r["mpe"]),
                             "passed": r["passed"] == 1
@@ -1332,20 +1464,55 @@ class MetrolabServerHandler(BaseHTTPRequestHandler):
                 }
             }
 
-
             try:
                 # Ensure QR code image is generated first
                 qr_path = REPORTS_DIR / f"qr_{eval_id}.png"
                 proto.generate_qr(report_data, str(qr_path))
                 proto.generate_pdf_report(report_data, str(pdf_path))
-                db.log_audit(user["sub"], "GENERATE_PDF", "REPORT", eval_id, {"pdf": pdf_filename}, self.client_address[0])
+
+                pdf_url = f"/api/reports/{pdf_filename}"
+                now = datetime.datetime.now().isoformat()
+
+                # Store report metadata persistently in reports table
+                conn.execute("""
+                INSERT OR REPLACE INTO reports (
+                    report_id, evaluation_id, instrument_id, instrument_serial, instrument_model,
+                    capacity, class, combined_error, mpe, conformity, compliance_score, risk_level,
+                    created_at, inspector_name, inspector_id, pdf_filename, pdf_url, certificate_number, json_data
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    report_id, eval_id, ev["instrument_id"], ev["serial_number"], ev["model"],
+                    float(ev["max_capacity"]), ev["accuracy_class"], float(ev["combined_uncertainty"] or 0.0),
+                    float(readings[0]["mpe"]) if readings else 0.0, 1 if ev["conformity"] == 1 else 0,
+                    float(ev["compliance_score"] or 100.0), ev["risk_level"] or "LOW",
+                    now, ev["inspector_name"] or "Authorized Officer", ev["inspector_id"],
+                    pdf_filename, pdf_url, cert_no, json.dumps(report_data).encode("utf-8")
+                ))
+                conn.commit()
+                conn.close()
+
+                db.log_audit(user["sub"], "GENERATE_REPORT", "REPORT", report_id, {
+                    "evaluation_id": eval_id,
+                    "instrument_id": ev["instrument_id"],
+                    "serial_number": ev["serial_number"],
+                    "certificate_number": cert_no,
+                    "pdf": pdf_filename
+                }, self.client_address[0])
+
                 self.send_json({
                     "success": True,
-                    "pdf_url": f"/api/reports/{pdf_filename}",
-                    "report_url": f"/api/reports/{pdf_filename}",
-                    "filename": pdf_filename
+                    "report_id": report_id,
+                    "evaluation_id": eval_id,
+                    "instrument_id": ev["instrument_id"],
+                    "certificate_number": cert_no,
+                    "pdf_url": pdf_url,
+                    "report_url": pdf_url,
+                    "filename": pdf_filename,
+                    "created_at": now,
+                    "message": "Final statutory report generated and stored permanently in database"
                 })
             except Exception as e:
+                conn.close()
                 self.send_error_json(f"PDF Generation failed: {str(e)}", 500)
             return
 

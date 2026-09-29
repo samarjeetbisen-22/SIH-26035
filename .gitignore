@@ -4,8 +4,7 @@ frontend/node_modules/
 package-lock.json
 
 # Build outputs (tracked for standalone zero-dependency Python deployment)
-# frontend/dist/
-dist/
+/dist/
 
 # Python cache & virtual environments
 __pycache__/

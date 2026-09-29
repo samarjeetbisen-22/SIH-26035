@@ -40,6 +40,7 @@ interface ComputationPreviewProps {
   evaluationStatus?: string;
   reviewComments?: string;
   certificateNumber?: string;
+  currentReport?: any;
   onSubmitForReview?: () => void;
   isSubmittingForReview?: boolean;
 }
@@ -60,6 +61,7 @@ export const ComputationPreview: React.FC<ComputationPreviewProps> = ({
   evaluationStatus,
   reviewComments,
   certificateNumber,
+  currentReport,
   onSubmitForReview,
   isSubmittingForReview = false,
 }) => {
@@ -169,7 +171,9 @@ export const ComputationPreview: React.FC<ComputationPreviewProps> = ({
               </div>
             )}
             <p className="text-[11px] text-amber-700 mt-1.5">
-              Please review your test readings or environmental parameters, apply corrections, and click <strong>&quot;Resubmit for Review&quot;</strong>.
+              Please review your test readings or environmental parameters,
+              apply corrections, and click{" "}
+              <strong>&quot;Resubmit for Review&quot;</strong>.
             </p>
           </div>
         </div>
@@ -184,13 +188,16 @@ export const ComputationPreview: React.FC<ComputationPreviewProps> = ({
                 Statutory Verification Approved &amp; Endorsed
               </div>
               <div className="text-xs text-emerald-700 mt-0.5">
-                OIML R-76 statutory compliance confirmed by Legal Metrology Reviewer. Official certificate is stamped and legally valid.
+                OIML R-76 statutory compliance confirmed by Legal Metrology
+                Reviewer. Official certificate is stamped and legally valid.
               </div>
             </div>
           </div>
           {certificateNumber && (
             <div className="text-right">
-              <span className="text-[10px] text-emerald-700 font-semibold block uppercase">Certificate No</span>
+              <span className="text-[10px] text-emerald-700 font-semibold block uppercase">
+                Certificate No
+              </span>
               <span className="font-mono text-xs font-bold text-emerald-950 bg-emerald-100 px-2 py-0.5 rounded border border-emerald-300">
                 {certificateNumber}
               </span>
@@ -199,11 +206,51 @@ export const ComputationPreview: React.FC<ComputationPreviewProps> = ({
         </div>
       )}
 
+      {currentReport && (
+        <div className="bg-slate-900 border border-slate-700 text-white rounded-lg p-3.5 flex items-center justify-between shadow-sm no-print">
+          <div className="flex items-center space-x-3">
+            <FileCheck className="w-5 h-5 text-emerald-400 shrink-0" />
+            <div>
+              <div className="text-xs font-bold text-white flex items-center space-x-2">
+                <span>Official Metrology Report Stamped &amp; Issued</span>
+                {currentReport.certificate_number && (
+                  <span className="font-mono text-[10px] bg-emerald-950 text-emerald-300 border border-emerald-600 px-1.5 py-0.5 rounded">
+                    Cert #{currentReport.certificate_number}
+                  </span>
+                )}
+              </div>
+              <div className="text-[11px] text-slate-300 mt-0.5">
+                Report File:{" "}
+                <code className="text-emerald-300">
+                  {currentReport.pdf_filename || currentReport.report_id}
+                </code>
+                {currentReport.created_at &&
+                  ` · Generated: ${currentReport.created_at.slice(0, 19).replace("T", " ")}`}
+              </div>
+            </div>
+          </div>
+          {currentReport.pdf_url && (
+            <a
+              href={currentReport.pdf_url}
+              target="_blank"
+              rel="noreferrer"
+              className="flex items-center space-x-1.5 px-3 py-1.5 text-xs font-semibold text-slate-900 bg-emerald-400 hover:bg-emerald-300 rounded transition-colors shadow-sm"
+            >
+              <span>View Stamped PDF</span>
+            </a>
+          )}
+        </div>
+      )}
+
       {evaluationStatus === "SUBMITTED" && (
         <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 flex items-center space-x-3 text-blue-900 no-print">
           <Clock className="w-4 h-4 text-blue-600 shrink-0 animate-spin" />
           <div className="text-xs">
-            <strong className="text-blue-800">Submitted for Statutory Review:</strong> This evaluation is currently awaiting inspection and approval in the Reviewer queue.
+            <strong className="text-blue-800">
+              Submitted for Statutory Review:
+            </strong>{" "}
+            This evaluation is currently awaiting inspection and approval in the
+            Reviewer queue.
           </div>
         </div>
       )}
@@ -212,7 +259,10 @@ export const ComputationPreview: React.FC<ComputationPreviewProps> = ({
         <div className="bg-blue-50 border border-blue-300 rounded-lg p-3 flex items-center space-x-3 text-blue-900 no-print">
           <ShieldAlert className="w-4 h-4 text-blue-600 shrink-0" />
           <div className="text-xs">
-            <strong className="text-blue-800">Statutory Inspection in Progress:</strong> A Legal Metrology Reviewer is actively examining these test results.
+            <strong className="text-blue-800">
+              Statutory Inspection in Progress:
+            </strong>{" "}
+            A Legal Metrology Reviewer is actively examining these test results.
           </div>
         </div>
       )}
@@ -720,23 +770,26 @@ export const ComputationPreview: React.FC<ComputationPreviewProps> = ({
             </div>
 
             <div className="flex items-center space-x-1.5 text-xs flex-wrap gap-y-1">
-              {backendOnline && onSubmitForReview && evaluationStatus !== "APPROVED" && (
-                <button
-                  onClick={onSubmitForReview}
-                  disabled={isSubmittingForReview}
-                  className="flex items-center space-x-1 px-3 py-1 rounded bg-blue-600 hover:bg-blue-700 text-white font-semibold shadow-sm transition-colors text-xs"
-                  title="Submit this evaluation to Legal Metrology Reviewer queue"
-                >
-                  <Send className="w-3.5 h-3.5" />
-                  <span>
-                    {isSubmittingForReview
-                      ? "Submitting..."
-                      : evaluationStatus === "REJECTED" || evaluationStatus === "RETURNED"
-                        ? "Resubmit for Review"
-                        : "Submit for Review"}
-                  </span>
-                </button>
-              )}
+              {backendOnline &&
+                onSubmitForReview &&
+                evaluationStatus !== "APPROVED" && (
+                  <button
+                    onClick={onSubmitForReview}
+                    disabled={isSubmittingForReview}
+                    className="flex items-center space-x-1 px-3 py-1 rounded bg-blue-600 hover:bg-blue-700 text-white font-semibold shadow-sm transition-colors text-xs"
+                    title="Submit this evaluation to Legal Metrology Reviewer queue"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    <span>
+                      {isSubmittingForReview
+                        ? "Submitting..."
+                        : evaluationStatus === "REJECTED" ||
+                            evaluationStatus === "RETURNED"
+                          ? "Resubmit for Review"
+                          : "Submit for Review"}
+                    </span>
+                  </button>
+                )}
               {backendOnline && onSaveToAuditDb && (
                 <button
                   onClick={onSaveToAuditDb}
@@ -751,10 +804,26 @@ export const ComputationPreview: React.FC<ComputationPreviewProps> = ({
                 <button
                   onClick={onGeneratePythonPdf}
                   disabled={isGeneratingPdf}
-                  className="px-2.5 py-1 rounded border border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 font-medium transition-colors"
-                  title="Generate Python ReportLab PDF with QR code"
+                  className={`px-2.5 py-1 rounded font-medium transition-colors ${
+                    evaluationStatus === "APPROVED"
+                      ? "border border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
+                      : "border border-slate-200 bg-slate-100 text-slate-500 cursor-pointer"
+                  }`}
+                  title={
+                    evaluationStatus === "APPROVED"
+                      ? currentReport
+                        ? "Regenerate/Download official stamped PDF"
+                        : "Generate official stamped ReportLab PDF with QR code"
+                      : "Final statutory report requires Reviewer approval"
+                  }
                 >
-                  {isGeneratingPdf ? "Generating..." : "📄 Python PDF"}
+                  {isGeneratingPdf
+                    ? "Generating..."
+                    : currentReport
+                      ? "📄 Download Final PDF"
+                      : evaluationStatus === "APPROVED"
+                        ? "📄 Generate Final Report"
+                        : "📄 Final Report (Locked)"}
                 </button>
               )}
               <button
